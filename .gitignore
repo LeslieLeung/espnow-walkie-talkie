@@ -1,0 +1,8 @@
+/build/
+/build-host/
+/build-host-sanitize/
+/managed_components/
+/sdkconfig
+/sdkconfig.old
+
+.scratch

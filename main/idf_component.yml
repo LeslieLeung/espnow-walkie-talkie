@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.4,<5.5"
+  m5stack/M5Unified: "0.2.19"
+  lvgl/lvgl: "8.4.0"

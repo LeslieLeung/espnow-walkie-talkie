@@ -1,0 +1,11 @@
+menu "ESP-NOW Walkie-Talkie"
+
+config WALKIE_RADIO_CHANNEL
+    int "Physical Wi-Fi channel"
+    range 1 13
+    default 6
+    help
+        All devices must use the same physical channel. CH1-CH4 in the UI are
+        logical protocol channels and do not retune the radio.
+
+endmenu
