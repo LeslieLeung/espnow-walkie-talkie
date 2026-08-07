@@ -44,7 +44,7 @@ constexpr uint32_t kMaximumBspRetries = 2;
 RTC_NOINIT_ATTR uint32_t g_bsp_retry_magic;
 RTC_NOINIT_ATTR uint32_t g_bsp_retry_count;
 
-StickS3Bsp g_bsp;
+BoardBsp g_bsp;
 EspNowTransport g_transport;
 EventGroupHandle_t g_audio_events = nullptr;
 QueueHandle_t g_playback_queue = nullptr;
@@ -262,8 +262,9 @@ void apply_actions(Actions actions, TalkController& controller) {
     }
 }
 
-void format_device_name(const wp::DeviceId& id, std::array<char, wp::kDeviceNameSize>& name) {
-    std::snprintf(name.data(), name.size(), "S3-%02X%02X", id[4], id[5]);
+void format_device_name(const char* prefix, const wp::DeviceId& id,
+                       std::array<char, wp::kDeviceNameSize>& name) {
+    std::snprintf(name.data(), name.size(), "%s%02X%02X", prefix, id[4], id[5]);
 }
 
 protocol::DeviceState wire_state(TalkState state) {
@@ -286,13 +287,13 @@ extern "C" void app_main() {
         }
         if (g_bsp_retry_count < kMaximumBspRetries) {
             ++g_bsp_retry_count;
-            ESP_LOGW(kTag, "StickS3 BSP initialization failed; retrying boot (%u/%u)",
+            ESP_LOGW(kTag, "Board BSP initialization failed; retrying boot (%u/%u)",
                      static_cast<unsigned>(g_bsp_retry_count),
                      static_cast<unsigned>(kMaximumBspRetries));
             vTaskDelay(pdMS_TO_TICKS(100));
             esp_restart();
         }
-        ESP_LOGE(kTag, "StickS3 BSP initialization failed after retries");
+        ESP_LOGE(kTag, "Board BSP initialization failed after retries (need StickS3 or StopWatch)");
         return;
     }
     g_bsp_retry_magic = kBspRetryMagic;
@@ -337,7 +338,7 @@ extern "C" void app_main() {
     PresenceManager presence;
     NavigationController navigation;
     std::array<char, wp::kDeviceNameSize> local_name{};
-    format_device_name(local_id, local_name);
+    format_device_name(g_bsp.name_prefix(), local_id, local_name);
     uint32_t last_input_ms = now_ms();
     uint32_t next_heartbeat_ms = now_ms();
     uint32_t next_ui_ms = 0;
@@ -486,7 +487,7 @@ extern "C" void app_main() {
             heartbeat.name = local_name;
             heartbeat.battery_percent = static_cast<uint8_t>(g_bsp.battery_percent());
             heartbeat.state = wire_state(controller.snapshot().state);
-            heartbeat.board = wp::BoardType::StickS3;
+            heartbeat.board = g_bsp.board_type();
             uint8_t payload[16]{};
             size_t payload_size = 0;
             if (wp::encode_heartbeat(heartbeat, payload, sizeof(payload), payload_size)) {

@@ -41,7 +41,7 @@ struct UiSnapshot {
 
 class Ui {
 public:
-    explicit Ui(StickS3Bsp& bsp) : bsp_(bsp) {}
+    explicit Ui(BoardBsp& bsp) : bsp_(bsp) {}
     bool start();
     bool publish(const UiSnapshot& snapshot);
 
@@ -49,7 +49,7 @@ private:
     static void task_entry(void* context);
     void run();
 
-    StickS3Bsp& bsp_;
+    BoardBsp& bsp_;
     QueueHandle_t queue_{nullptr};
 };
 

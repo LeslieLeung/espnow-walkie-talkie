@@ -9,7 +9,7 @@ idf_component_register(
         "presence.cpp"
         "protocol.cpp"
         "settings.cpp"
-        "sticks3_bsp.cpp"
+        "board_bsp.cpp"
         "talk_controller.cpp"
         "ui.cpp"
     INCLUDE_DIRS "include"

@@ -45,9 +45,9 @@ void PresenceManager::observe_activity(const protocol::DeviceId& id, protocol::D
         return;
     }
     protocol::Heartbeat heartbeat{};
-    std::snprintf(heartbeat.name.data(), heartbeat.name.size(), "S3-%02X%02X", id[4], id[5]);
+    std::snprintf(heartbeat.name.data(), heartbeat.name.size(), "WT-%02X%02X", id[4], id[5]);
     heartbeat.state = state;
-    heartbeat.board = protocol::BoardType::StickS3;
+    heartbeat.board = protocol::BoardType::Unknown;
     observe(id, heartbeat, now_ms, rssi);
 }
 

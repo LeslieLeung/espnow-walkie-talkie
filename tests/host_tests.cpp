@@ -54,6 +54,14 @@ void test_protocol_round_trip() {
     assert(wp::decode_heartbeat(decoded, decoded_heartbeat));
     assert(decoded_heartbeat.name == heartbeat.name);
     assert(decoded_heartbeat.battery_percent == 72);
+    assert(decoded_heartbeat.board == wp::BoardType::StickS3);
+
+    heartbeat.board = wp::BoardType::StopWatch;
+    assert(wp::encode_heartbeat(heartbeat, payload, sizeof(payload), payload_size));
+    assert(wp::encode(header, payload, payload_size, wire.data(), wire.size(), wire_size));
+    assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::None);
+    assert(wp::decode_heartbeat(decoded, decoded_heartbeat));
+    assert(decoded_heartbeat.board == wp::BoardType::StopWatch);
 
     wire[0] ^= 0x01;
     assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::BadMagic);

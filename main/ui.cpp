@@ -12,7 +12,7 @@ namespace walkie {
 namespace {
 
 constexpr int kDrawRows = 24;
-StickS3Bsp* g_bsp = nullptr;
+BoardBsp* g_bsp = nullptr;
 lv_disp_draw_buf_t g_draw_buffer{};
 lv_disp_drv_t g_display_driver{};
 lv_color_t* g_pixels = nullptr;
@@ -23,6 +23,54 @@ lv_obj_t* g_subheader = nullptr;
 lv_obj_t* g_primary = nullptr;
 lv_obj_t* g_body = nullptr;
 lv_obj_t* g_footer = nullptr;
+
+struct Layout {
+    int inset{6};
+    int content_width{123};
+    int header_y{8};
+    int subheader_y{30};
+    int primary_offset_y{-20};
+    int body_offset_y{18};
+    int footer_offset_y{-8};
+    int menu_x{20};
+    int menu_y{48};
+    int devices_x{5};
+    int devices_y{42};
+    int volume_x{28};
+    int volume_y{43};
+    const lv_font_t* header_font{&lv_font_montserrat_14};
+    const lv_font_t* primary_font{&lv_font_montserrat_20};
+    const lv_font_t* body_font{&lv_font_montserrat_14};
+    const lv_font_t* list_font{&lv_font_montserrat_12};
+    const lv_font_t* footer_font{&lv_font_montserrat_12};
+};
+
+Layout g_layout{};
+
+Layout make_layout(const BoardBsp& bsp) {
+    Layout layout{};
+    layout.inset = bsp.content_inset();
+    layout.content_width = bsp.display_width() - (layout.inset * 2);
+    if (bsp.round_display()) {
+        layout.header_y = 72;
+        layout.subheader_y = 108;
+        layout.primary_offset_y = -28;
+        layout.body_offset_y = 36;
+        layout.footer_offset_y = -72;
+        layout.menu_x = layout.inset + 36;
+        layout.menu_y = 140;
+        layout.devices_x = layout.inset + 24;
+        layout.devices_y = 130;
+        layout.volume_x = layout.inset + 48;
+        layout.volume_y = 130;
+        layout.header_font = &lv_font_montserrat_20;
+        layout.primary_font = &lv_font_montserrat_28;
+        layout.body_font = &lv_font_montserrat_20;
+        layout.list_font = &lv_font_montserrat_14;
+        layout.footer_font = &lv_font_montserrat_14;
+    }
+    return layout;
+}
 
 const char* state_text(TalkState state) {
     switch (state) {
@@ -62,50 +110,54 @@ void style_label(lv_obj_t* label, const lv_color_t color) {
 }
 
 void create_screen(int width, int height) {
+    (void)height;
     g_screen = lv_scr_act();
     lv_obj_set_style_bg_color(g_screen, lv_color_hex(kIdleScreenRgb), 0);
     lv_obj_set_style_bg_opa(g_screen, LV_OPA_COVER, 0);
 
     g_header = lv_label_create(g_screen);
-    lv_obj_set_width(g_header, width - 12);
-    lv_obj_align(g_header, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_set_width(g_header, g_layout.content_width);
+    lv_obj_align(g_header, LV_ALIGN_TOP_MID, 0, g_layout.header_y);
+    lv_obj_set_style_text_font(g_header, g_layout.header_font, 0);
     style_label(g_header, lv_color_hex(0xE7F4F5));
 
     g_subheader = lv_label_create(g_screen);
-    lv_obj_set_width(g_subheader, width - 12);
-    lv_obj_align(g_subheader, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_set_width(g_subheader, g_layout.content_width);
+    lv_obj_align(g_subheader, LV_ALIGN_TOP_MID, 0, g_layout.subheader_y);
+    lv_obj_set_style_text_font(g_subheader, g_layout.body_font, 0);
     style_label(g_subheader, lv_color_hex(0x7FC9C8));
 
     g_primary = lv_label_create(g_screen);
-    lv_obj_set_width(g_primary, width - 8);
-    lv_obj_align(g_primary, LV_ALIGN_CENTER, 0, -20);
-    lv_obj_set_style_text_font(g_primary, &lv_font_montserrat_20, 0);
+    lv_obj_set_width(g_primary, g_layout.content_width);
+    lv_obj_align(g_primary, LV_ALIGN_CENTER, 0, g_layout.primary_offset_y);
+    lv_obj_set_style_text_font(g_primary, g_layout.primary_font, 0);
     style_label(g_primary, lv_color_hex(0xFFFFFF));
 
     g_body = lv_label_create(g_screen);
-    lv_obj_set_width(g_body, width - 16);
+    lv_obj_set_width(g_body, g_layout.content_width);
     lv_label_set_long_mode(g_body, LV_LABEL_LONG_WRAP);
-    lv_obj_align(g_body, LV_ALIGN_CENTER, 0, 18);
+    lv_obj_align(g_body, LV_ALIGN_CENTER, 0, g_layout.body_offset_y);
+    lv_obj_set_style_text_font(g_body, g_layout.body_font, 0);
     style_label(g_body, lv_color_hex(0xA7B7BD));
 
     g_footer = lv_label_create(g_screen);
-    lv_obj_set_width(g_footer, width - 8);
-    lv_obj_align(g_footer, LV_ALIGN_BOTTOM_MID, 0, -8);
-    lv_obj_set_style_text_font(g_footer, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(g_footer, g_layout.content_width);
+    lv_obj_align(g_footer, LV_ALIGN_BOTTOM_MID, 0, g_layout.footer_offset_y);
+    lv_obj_set_style_text_font(g_footer, g_layout.footer_font, 0);
     style_label(g_footer, lv_color_hex(0x789096));
 
-    (void)height;
+    (void)width;
 }
 
-void reset_layout(int width) {
+void reset_layout() {
     lv_obj_clear_flag(g_subheader, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(g_primary, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(g_body, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(g_footer, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_width(g_body, width - 16);
-    lv_obj_set_style_text_font(g_body, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(g_body, g_layout.content_width);
+    lv_obj_set_style_text_font(g_body, g_layout.body_font, 0);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(g_body, LV_ALIGN_CENTER, 0, 18);
+    lv_obj_align(g_body, LV_ALIGN_CENTER, 0, g_layout.body_offset_y);
 }
 
 void render_main(const UiSnapshot& snapshot) {
@@ -141,7 +193,7 @@ void render_menu(const UiSnapshot& snapshot) {
     const char* marker2 = snapshot.menu_index == 2 ? ">" : " ";
     lv_label_set_text_fmt(g_body, "%s DEVICES\n\n%s SETTINGS\n\n%s EXIT", marker0, marker1, marker2);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, 20, 48);
+    lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.menu_x, g_layout.menu_y);
     lv_label_set_text(g_footer, "B: NEXT   A: OPEN\nHOLD B: BACK");
 }
 
@@ -154,7 +206,8 @@ void render_devices(const UiSnapshot& snapshot) {
     if (snapshot.peer_count == 0) {
         std::snprintf(lines, sizeof(lines), "NO DEVICES");
     } else {
-        const size_t shown = snapshot.peer_count < 6 ? snapshot.peer_count : 6;
+        const size_t max_rows = g_bsp != nullptr && g_bsp->round_display() ? 8 : 6;
+        const size_t shown = snapshot.peer_count < max_rows ? snapshot.peer_count : max_rows;
         for (size_t row = 0; row < shown; ++row) {
             const size_t index = (snapshot.device_offset + row) % snapshot.peer_count;
             const UiPeer& peer = snapshot.peers[index];
@@ -166,9 +219,9 @@ void render_devices(const UiSnapshot& snapshot) {
         }
     }
     lv_label_set_text(g_body, lines);
-    lv_obj_set_style_text_font(g_body, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(g_body, g_layout.list_font, 0);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, 5, 42);
+    lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.devices_x, g_layout.devices_y);
     lv_label_set_text(g_footer, "B: SCROLL   HOLD B: BACK");
 }
 
@@ -183,13 +236,13 @@ void render_volume(const UiSnapshot& snapshot) {
                           snapshot.volume_index == 2 ? ">" : " ", names[2],
                           snapshot.volume_index == 3 ? ">" : " ", names[3]);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, 28, 43);
+    lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.volume_x, g_layout.volume_y);
     lv_label_set_text(g_footer, "B: NEXT   A: SAVE\nHOLD B: BACK");
 }
 
-void render(const UiSnapshot& snapshot, int width) {
+void render(const UiSnapshot& snapshot) {
     lv_obj_set_style_bg_color(g_screen, lv_color_hex(screen_background_rgb(snapshot.talk_state)), 0);
-    reset_layout(width);
+    reset_layout();
     switch (snapshot.page) {
         case UiPage::Main: render_main(snapshot); break;
         case UiPage::Menu: render_menu(snapshot); break;
@@ -216,11 +269,17 @@ void Ui::task_entry(void* context) {
 
 void Ui::run() {
     g_bsp = &bsp_;
+    g_layout = make_layout(bsp_);
     lv_init();
     const int width = bsp_.display_width();
     const int height = bsp_.display_height();
+    // Prefer internal DMA RAM; fall back to PSRAM for the larger StopWatch panel.
     g_pixels = static_cast<lv_color_t*>(heap_caps_malloc(
         static_cast<size_t>(width * kDrawRows) * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    if (g_pixels == nullptr) {
+        g_pixels = static_cast<lv_color_t*>(heap_caps_malloc(
+            static_cast<size_t>(width * kDrawRows) * sizeof(lv_color_t), MALLOC_CAP_SPIRAM));
+    }
     if (g_pixels == nullptr) {
         vTaskDelete(nullptr);
         return;
@@ -237,7 +296,7 @@ void Ui::run() {
     UiSnapshot snapshot{};
     uint32_t last_tick_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
     for (;;) {
-        if (xQueueReceive(queue_, &snapshot, pdMS_TO_TICKS(10)) == pdTRUE) render(snapshot, width);
+        if (xQueueReceive(queue_, &snapshot, pdMS_TO_TICKS(10)) == pdTRUE) render(snapshot);
         const uint32_t tick_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
         lv_tick_inc(tick_ms - last_tick_ms);
         last_tick_ms = tick_ms;

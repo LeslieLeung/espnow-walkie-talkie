@@ -1,6 +1,6 @@
 # ESP-NOW Walkie-Talkie
 
-基于 ESP-NOW 的半双工对讲机固件，面向 [M5Stack StickS3](https://docs.m5stack.com/en/core/StickS3)。多台刷同一固件的设备可自动加入频道，无需 Wi-Fi 热点、手机或服务器。
+基于 ESP-NOW 的半双工对讲机固件，面向 [M5Stack StopWatch](https://docs.m5stack.com/zh_CN/core/StopWatch) 与 [StickS3](https://docs.m5stack.com/en/core/StickS3)。同一固件镜像通过 M5Unified 自动识别板型；多台设备刷同一固件即可自动加入频道，无需 Wi-Fi 热点、手机或服务器。
 
 ## 功能
 
@@ -14,15 +14,17 @@
 
 ## 硬件
 
-| 项目 | StickS3 |
-| --- | --- |
-| 主控 | ESP32-S3-PICO-1-N8R8 |
-| 显示 | 135×240 ST7789 |
-| 音频 | ES8311（麦克风 + 扬声器） |
-| 按键 | A / B |
-| 电池 | 250 mAh |
+| 项目 | StopWatch | StickS3 |
+| --- | --- | --- |
+| 主控 | ESP32-S3R8 | ESP32-S3-PICO-1-N8R8 |
+| Flash / PSRAM | 16MB / 8MB | 8MB / 8MB |
+| 显示 | 1.75" 圆形 AMOLED 466×466 | 135×240 ST7789 |
+| 音频 | ES8311（麦克风 + 扬声器） | 同左 |
+| 按键 | KEYA（黄）/ KEYB（蓝） | A / B |
+| 电池 | 450 mAh（M5PM1） | 250 mAh |
+| 设备名前缀 | `SW-` + MAC 后四位 | `S3-` + MAC 后四位 |
 
-所有参与设备必须使用**同一固件**，并配置**相同的物理 Wi-Fi 信道**（默认 6）。界面中的 CH1–CH4 是逻辑频道，不会切换射频信道。
+所有参与设备必须使用**同一固件**，并配置**相同的物理 Wi-Fi 信道**（默认 6）。界面中的 CH1–CH4 是逻辑频道，不会切换射频信道。StopWatch 与 StickS3 可互通。
 
 ## 使用
 
@@ -30,9 +32,9 @@
 
 | 操作 | 行为 |
 | --- | --- |
-| 按住 A | 申请发言并开始对讲（最长 30 秒） |
+| 按住 A（StopWatch：黄键） | 申请发言并开始对讲（最长 30 秒） |
 | 松开 A | 结束发言 |
-| 短按 B | 切换 CH1 → CH2 → CH3 → CH4 |
+| 短按 B（StopWatch：蓝键） | 切换 CH1 → CH2 → CH3 → CH4 |
 | 长按 B | 打开菜单 |
 
 背光关闭时：按 A 会唤醒并立刻进入对讲；按 B 仅唤醒，不切换频道；收到有效对讲会自动亮屏。
@@ -55,7 +57,7 @@
 - **SETTINGS** — 音量（MUTE / 25% / 50% / 75%）
 - **EXIT** — 返回主界面
 
-设备名默认为 `S3-` + MAC 后四位十六进制。首次启动默认 CH1、音量 50%。
+首次启动默认 CH1、音量 50%。
 
 ## 原理概要
 
@@ -83,7 +85,11 @@ idf.py build
 idf.py -p <PORT> flash monitor
 ```
 
-每台 StickS3 烧录同一镜像。物理射频信道可在 `idf.py menuconfig` → **ESP-NOW Walkie-Talkie** → **Physical Wi-Fi channel** 中修改（默认 6）。
+### StopWatch 进入下载模式
+
+USB Type-C 连接电脑后，**长按电源键约 2 秒**直到绿色 LED 亮起再松开，然后执行 `idf.py flash`。
+
+每台设备烧录同一镜像。物理射频信道可在 `idf.py menuconfig` → **ESP-NOW Walkie-Talkie** → **Physical Wi-Fi channel** 中修改（默认 6）。
 
 ## 主机测试
 
