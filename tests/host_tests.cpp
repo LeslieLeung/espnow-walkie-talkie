@@ -2,9 +2,11 @@
 #include "walkie/audio_jitter.hpp"
 #include "walkie/display_policy.hpp"
 #include "walkie/navigation.hpp"
+#include "walkie/button_ladder.hpp"
 #include "walkie/presence.hpp"
 #include "walkie/protocol.hpp"
 #include "walkie/talk_controller.hpp"
+#include "walkie/ui_model.hpp"
 
 #include <array>
 #include <cassert>
@@ -62,6 +64,13 @@ void test_protocol_round_trip() {
     assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::None);
     assert(wp::decode_heartbeat(decoded, decoded_heartbeat));
     assert(decoded_heartbeat.board == wp::BoardType::StopWatch);
+
+    heartbeat.board = wp::BoardType::AiPassport;
+    assert(wp::encode_heartbeat(heartbeat, payload, sizeof(payload), payload_size));
+    assert(wp::encode(header, payload, payload_size, wire.data(), wire.size(), wire_size));
+    assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::None);
+    assert(wp::decode_heartbeat(decoded, decoded_heartbeat));
+    assert(decoded_heartbeat.board == wp::BoardType::AiPassport);
 
     wire[0] ^= 0x01;
     assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::BadMagic);
@@ -161,6 +170,149 @@ void test_display_policy() {
     assert(talk_activity_keeps_screen_awake(TalkState::Talking));
     assert(talk_activity_keeps_screen_awake(TalkState::Receiving));
     assert(talk_activity_keeps_screen_awake(TalkState::Busy));
+}
+
+void test_ui_snapshot_policy() {
+    UiSnapshot first{};
+    UiSnapshot same = first;
+    assert(ui_snapshots_equal(first, same));
+
+    same.online_count = 1;
+    assert(!ui_snapshots_equal(first, same));
+    same = first;
+    same.remaining_seconds = 29;
+    assert(!ui_snapshots_equal(first, same));
+
+    // A talking snapshot is only dirty when its integer-second value changes.
+    first.talk_state = TalkState::Talking;
+    first.remaining_seconds = 17;
+    same = first;
+    assert(ui_snapshots_equal(first, same));
+    same.remaining_seconds = 16;
+    assert(!ui_snapshots_equal(first, same));
+
+    first = {};
+    first.peer_count = 1;
+    first.peers[0].occupied = true;
+    first.peers[0].name = {'S', '3', '-', '0', '0', '0', '1', '\0', '\0'};
+    same = first;
+    assert(ui_snapshots_equal(first, same));
+    same.peers[0].battery_percent = 80;
+    // Peer rows are not visible on the main page.
+    assert(ui_snapshots_equal(first, same));
+
+    first.page = UiPage::Devices;
+    same = first;
+    same.peers[0].battery_percent = 80;
+    assert(!ui_snapshots_equal(first, same));
+    // RSSI is represented separately by weak_signal and is not printed in a row.
+    same = first;
+    same.peers[0].rssi = -80;
+    assert(ui_snapshots_equal(first, same));
+
+    // Changes in unused peer slots do not cause a redraw.
+    same = first;
+    same.peers[1].battery_percent = 99;
+    assert(ui_snapshots_equal(first, same));
+}
+
+void test_ui_sleep_coalescing() {
+    UiDeliveryPolicy delivery;
+    UiSnapshot snapshot{};
+    assert(delivery.publish(snapshot));
+
+    snapshot.backlight_on = false;
+    snapshot.online_count = 1;
+    assert(delivery.publish(snapshot));
+    snapshot.online_count = 2;
+    assert(!delivery.publish(snapshot));
+    snapshot.online_count = 3;
+    snapshot.battery_percent = 42;
+    assert(!delivery.publish(snapshot));
+
+    snapshot.backlight_on = true;
+    assert(delivery.publish(snapshot));
+    assert(delivery.latest().online_count == 3);
+    assert(delivery.latest().battery_percent == 42);
+
+    DisplayPowerPolicy display;
+    assert(display.set_awake(true) == DisplayTransition::None);
+    assert(display.set_awake(false) == DisplayTransition::Sleep);
+    assert(display.set_awake(false) == DisplayTransition::None);
+    assert(display.set_awake(true) == DisplayTransition::Wake);
+    assert(display.set_awake(true) == DisplayTransition::None);
+}
+
+void test_ladder_buttons() {
+    LadderButtonState state{};
+    ButtonEvents events = poll_ladder_buttons(state, kLadderKeyOk, 0);
+    assert(!events.a_pressed);
+    events = poll_ladder_buttons(state, kLadderKeyOk, 40);
+    assert(!events.a_pressed);
+    events = poll_ladder_buttons(state, kLadderKeyOk, 50);
+    assert(events.a_pressed);
+    assert(!events.a_released);
+
+    events = poll_ladder_buttons(state, kLadderInvalidSample, 60);
+    assert(!events.a_released);
+    events = poll_ladder_buttons(state, kLadderInvalidSample, 130);
+    assert(!events.a_released);
+    events = poll_ladder_buttons(state, kLadderKeyOk, 140);
+    assert(!events.a_pressed);
+    assert(!events.a_released);
+
+    events = poll_ladder_buttons(state, kLadderNoKey, 150);
+    assert(!events.a_released);
+    events = poll_ladder_buttons(state, kLadderKeyOk, 160);
+    assert(!events.a_released);
+
+    events = poll_ladder_buttons(state, kLadderNoKey, 200);
+    assert(!events.a_released);
+    events = poll_ladder_buttons(state, kLadderNoKey, 250);
+    assert(events.a_released);
+
+    LadderButtonState click{};
+    poll_ladder_buttons(click, kLadderKeyUp, 0);
+    poll_ladder_buttons(click, kLadderKeyUp, 50);
+    poll_ladder_buttons(click, kLadderNoKey, 100);
+    events = poll_ladder_buttons(click, kLadderNoKey, 150);
+    assert(events.b_clicked);
+    assert(!events.b_held);
+
+    LadderButtonState hold{};
+    poll_ladder_buttons(hold, kLadderKeyDown, 0);
+    poll_ladder_buttons(hold, kLadderKeyDown, 50);
+    events = poll_ladder_buttons(hold, kLadderKeyDown, 449);
+    assert(!events.b_held);
+    events = poll_ladder_buttons(hold, kLadderKeyDown, 450);
+    assert(events.b_held);
+    events = poll_ladder_buttons(hold, kLadderKeyDown, 500);
+    assert(!events.b_held);
+    poll_ladder_buttons(hold, kLadderNoKey, 510);
+    events = poll_ladder_buttons(hold, kLadderNoKey, 560);
+    assert(!events.b_clicked);
+}
+
+void test_battery_sample_policy() {
+    BatterySamplePolicy battery;
+    assert(battery.due(100, true, TalkState::Idle));
+    battery.sampled(100);
+    assert(!battery.due(10099, true, TalkState::Idle));
+    assert(battery.due(10100, true, TalkState::Idle));
+    assert(!battery.due(60100, false, TalkState::Talking));
+    assert(battery.due(60100, false, TalkState::Idle));
+
+    BatterySamplePolicy switched;
+    switched.sampled(1000);
+    assert(!switched.due(12000, false, TalkState::Idle));
+    assert(switched.due(12000, true, TalkState::Idle));
+
+    BatterySamplePolicy wrapped;
+    wrapped.sampled(0xFFFFFF00U);
+    assert(!wrapped.due(0x00000100U, true, TalkState::Idle));
+    assert(wrapped.due(0x00003000U, true, TalkState::Idle));
+    assert(deadline_reached(0x00000010U, 0xFFFFFFF0U));
+    assert(!deadline_reached(0xFFFFFFF0U, 0x00000010U));
 }
 
 void test_start_conflict_resolution() {
@@ -385,6 +537,10 @@ int main() {
     test_adpcm();
     test_presence();
     test_display_policy();
+    test_ui_snapshot_policy();
+    test_ui_sleep_coalescing();
+    test_ladder_buttons();
+    test_battery_sample_policy();
     test_arbitration_and_timeout();
     test_start_conflict_resolution();
     test_navigation();

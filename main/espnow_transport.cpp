@@ -88,7 +88,7 @@ void EspNowTransport::receive_callback(const esp_now_recv_info_t* info, const ui
     }
 }
 
-void EspNowTransport::send_callback(const uint8_t*, esp_now_send_status_t) {
+void EspNowTransport::send_callback(const esp_now_send_info_t*, esp_now_send_status_t) {
     if (instance_ != nullptr && instance_->send_ready_ != nullptr) xSemaphoreGive(instance_->send_ready_);
 }
 

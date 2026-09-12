@@ -1,0 +1,9 @@
+# FoloToy AI Passport (ESP32-C3, single core, no PSRAM)
+CONFIG_IDF_TARGET="esp32c3"
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+# ST7789 SPI expects big-endian RGB565; M5 targets swap inside M5GFX instead.
+CONFIG_LV_COLOR_16_SWAP=y
+# UART0 TX defaults to GPIO21, which is the LEDC backlight pin on this board.
+# Keep the console on native USB Serial/JTAG (GPIO18/19).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

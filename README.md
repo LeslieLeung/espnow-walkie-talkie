@@ -1,109 +1,136 @@
 # ESP-NOW Walkie-Talkie
 
-基于 ESP-NOW 的半双工对讲机固件，面向 [M5Stack StopWatch](https://docs.m5stack.com/zh_CN/core/StopWatch) 与 [StickS3](https://docs.m5stack.com/en/core/StickS3)。同一固件镜像通过 M5Unified 自动识别板型；多台设备刷同一固件即可自动加入频道，无需 Wi-Fi 热点、手机或服务器。
+半双工对讲机固件。设备之间用 ESP-NOW 直连，不需要 Wi-Fi 热点、手机或服务器。刷入互相兼容的固件、物理射频信道一致即可自动入网。
+
+支持三块板：
+
+- [M5Stack StopWatch](https://docs.m5stack.com/zh_CN/core/StopWatch) 与 [StickS3](https://docs.m5stack.com/en/core/StickS3)（ESP32-S3，M5Unified 自动识别，共用一个镜像）
+- [FoloToy AI Passport](https://github.com/FoloToy/ai-passport)（ESP32-C3，单独编译）
+
+三块板可以互通。
 
 ## 功能
 
-- 四路逻辑频道（CH1–CH4），按住说话、松开结束
+- 四路逻辑频道 CH1–CH4；按住说话，松开结束，单次最长 30 秒
 - 同一频道同一时间仅一人发言，冲突时自动仲裁
-- 在线设备列表（名称、电量、状态）
-- 音量：静音 / 25% / 50% / 75%（上限 75%，避免电池供电下过载重启）
-- 频道与音量写入 NVS，重启后保留
-- 背光 30 秒无操作自动关闭；来电或按键可唤醒
-- 设计目标：每频道最多约 8 台在线设备
+- 在线列表：名称、电量、状态；设计目标为每频道约 8 台
+- 音量 MUTE / 25% / 50% / 75%（上限 75%，避免电池供电过载重启）
+- 频道与音量写入 NVS，重启后保留；出厂默认 CH1、50%
+- 30 秒无操作后关背光并让面板进入 Sleep；按键或来电唤醒后完整重绘
 
 ## 硬件
 
-| 项目 | StopWatch | StickS3 |
+| 项目 | StopWatch | StickS3 | AI Passport |
+| --- | --- | --- | --- |
+| 主控 | ESP32-S3R8 | ESP32-S3-PICO-1-N8R8 | ESP32-C3 |
+| Flash / PSRAM | 16MB / 8MB | 8MB / 8MB | 8MB / 无 |
+| 显示 | 1.75" 圆形 AMOLED 466×466 | 135×240 ST7789 | 240×320 ST7789P3 |
+| 音频 | ES8311（麦克风 + 扬声器） | 同左 | 同左 |
+| 按键 | KEYA（黄）/ KEYB（蓝） | A / B | 上 / 下 / 确定（ADC 分压） |
+| 电池 | 450 mAh（M5PM1） | 250 mAh | 520 mAh（CW2017 电量计） |
+| 设备名 | `SW-` + MAC 后四位 | `S3-` + MAC 后四位 | `AP-` + MAC 后四位 |
+
+镜像按 8MB Flash 打包，StopWatch 的 16MB 也能烧。AI Passport 板级支持来自 `folotoy/ai-passport` 的 BSP 子集，见 `components/bsp_passport/README.md`。
+
+**互通条件：** 协议版本一致，且 **物理 Wi-Fi 信道相同**（默认 6）。界面上的 CH1–CH4 只是逻辑频道，不会改射频。
+
+## 按键
+
+固件把输入抽象成 A（对讲）和 B（频道 / 菜单）。各板对应关系：
+
+| 动作 | StopWatch | StickS3 | AI Passport |
+| --- | --- | --- | --- |
+| 按住对讲 | 按住 KEYA | 按住 A | 按住 确定 |
+| 结束对讲 | 松开 KEYA | 松开 A | 松开 确定 |
+| 切换频道 CH1→CH4 | 短按 KEYB | 短按 B | 短按 上 或 下 |
+| 打开菜单 | 长按 KEYB | 长按 B | 长按 上 或 下 |
+
+息屏时：A / 确定会唤醒并立刻进入对讲；B / 上 / 下只唤醒，不切频道。收到有效对讲也会自动亮屏。
+
+菜单打开时禁用对讲。菜单内：
+
+| 动作 | StopWatch / StickS3 | AI Passport |
 | --- | --- | --- |
-| 主控 | ESP32-S3R8 | ESP32-S3-PICO-1-N8R8 |
-| Flash / PSRAM | 16MB / 8MB | 8MB / 8MB |
-| 显示 | 1.75" 圆形 AMOLED 466×466 | 135×240 ST7789 |
-| 音频 | ES8311（麦克风 + 扬声器） | 同左 |
-| 按键 | KEYA（黄）/ KEYB（蓝） | A / B |
-| 电池 | 450 mAh（M5PM1） | 250 mAh |
-| 设备名前缀 | `SW-` + MAC 后四位 | `S3-` + MAC 后四位 |
+| 下一项 / 滚动列表 | 短按 B | 短按 上 或 下 |
+| 确认 / 进入 / 保存音量 | 短按 A | 短按 确定 |
+| 返回 | 长按 B | 长按 上 或 下 |
 
-所有参与设备必须使用**同一固件**，并配置**相同的物理 Wi-Fi 信道**（默认 6）。界面中的 CH1–CH4 是逻辑频道，不会切换射频信道。StopWatch 与 StickS3 可互通。
+10 秒无操作回到主界面。
 
-## 使用
+## 界面
 
-### 主界面
+主界面显示频道、电量、在线人数和当前状态。电量 ≤15% 时标 `LOW BAT`。
 
-| 操作 | 行为 |
+| 状态 | 含义 |
 | --- | --- |
-| 按住 A（StopWatch：黄键） | 申请发言并开始对讲（最长 30 秒） |
-| 松开 A | 结束发言 |
-| 短按 B（StopWatch：蓝键） | 切换 CH1 → CH2 → CH3 → CH4 |
-| 长按 B | 打开菜单 |
-
-背光关闭时：按 A 会唤醒并立刻进入对讲；按 B 仅唤醒，不切换频道；收到有效对讲会自动亮屏。
-
-主界面状态包括：`IDLE`、`REQUESTING`、`TALKING`、`RECEIVING`、`BUSY`、`SIGNAL WEAK`、`NO DEVICES`。
-
-### 菜单
-
-长按 B 进入菜单后：
-
-- 短按 B：下一项
-- 短按 A：确认 / 进入
-- 长按 B：返回
-- 10 秒无操作回到主界面
-- 菜单打开时禁用对讲，避免误发
+| `IDLE` | 空闲，可对讲 |
+| `REQUESTING` | 正在申请发言权 |
+| `TALKING` | 本机正在发言 |
+| `RECEIVING` | 正在收听他人 |
+| `BUSY` | 频道已被占用（本机按住对讲也会进入此状态） |
+| `SIGNAL WEAK` | 信号弱或接收队列丢帧，音频可能断续 |
+| `NO DEVICES` | 当前逻辑频道没有其他在线设备 |
 
 菜单项：
 
-- **DEVICES** — 当前逻辑频道上的在线设备
-- **SETTINGS** — 音量（MUTE / 25% / 50% / 75%）
+- **DEVICES** — 当前逻辑频道上的在线设备（名称、电量、状态）
+- **SETTINGS** — 音量 MUTE / 25% / 50% / 75%
 - **EXIT** — 返回主界面
 
-首次启动默认 CH1、音量 50%。
+## 编译与烧录
 
-## 原理概要
+用 [eim](https://docs.espressif.com/projects/idf-im-cli/en/latest/) 管理 ESP-IDF。所有目标统一 **v5.5.3**（`idf: ">=5.5,<5.6"`）。也可以 `eim shell v5.5.3` 后直接跑 `idf.py`。
+
+同一份源码切换芯片目标会重建 `sdkconfig` 和 `dependencies.lock.<target>`。
+
+```sh
+# M5Stack StopWatch / StickS3
+eim run "idf.py set-target esp32s3 && idf.py build" v5.5.3
+eim run "idf.py -p <PORT> flash monitor" v5.5.3
+
+# FoloToy AI Passport
+eim run "idf.py set-target esp32c3 && idf.py build" v5.5.3
+eim run "idf.py -p <PORT> flash monitor" v5.5.3
+```
+
+StopWatch 进入下载模式：USB Type-C 接上电脑后，**长按电源键约 2 秒**直到绿色 LED 亮起再松开，然后 flash。
+
+物理射频信道在 `idf.py menuconfig` → **ESP-NOW Walkie-Talkie** → **Physical Wi-Fi channel** 修改（默认 6）。同菜单里的 runtime diagnostics 默认关闭，生产固件不要打开。
+
+AI Passport 控制台走 USB Serial/JTAG（GPIO18/19）。UART0 默认 TX 是 GPIO21，和 LEDC 背光脚冲突，不要改回 UART 控制台。
+
+## 原理
 
 ```text
 麦克风 → 16 kHz PCM → IMA-ADPCM → ESP-NOW 广播
-                                    ↓
+                                     ↓
 扬声器 ← PCM ← ADPCM 解码 ← 抖动缓冲 ←
 ```
 
 - 传输：ESP-NOW 广播，固定 2.4 GHz 物理信道
 - 音频：约 20 ms/包，端到端延迟目标约 100–200 ms
-- 发言权：`TALK_CLAIM` 仲裁 → `TALK_START` / `AUDIO` / `TALK_END`
-- 在线：约每 2 秒心跳；约 5–6 秒无包则从列表移除
+- 发言权：`TALK_CLAIM` 仲裁 → `TALK_START` / `AUDIO` / `TALK_END`；对端丢失 `TALK_END` 时约 800 ms 后释放
+- 在线：心跳约 1.8–2.2 秒一次；约 6 秒无包从列表移除
 
-v1 **不提供**加密、鉴权、一对一私聊、OTA、跨物理信道发现。附近兼容设备可能侦听或注入流量；逻辑频道只隔离应用行为。
+v1 **不提供**加密、鉴权、一对一私聊、OTA、跨物理信道发现。附近兼容设备可以侦听或注入流量；逻辑频道只隔离应用行为。
 
-## 构建与烧录
+## 限制
 
-需要 ESP-IDF **v5.4.x**（开发与验证基于 v5.4.4）。
+- 室内穿一堵普通墙约 10–20 m，开阔约 50 m，这是期望值不是硬指标
+- 每逻辑频道超过约 8 台不保证稳定
+- 丢包表现为短暂音频缺陷，不应卡死或复位
 
-```sh
-source "$HOME/.espressif/v5.4.4/esp-idf/export.sh"
-idf.py set-target esp32s3
-idf.py build
-idf.py -p <PORT> flash monitor
-```
+AI Passport 额外注意：
 
-### StopWatch 进入下载模式
-
-USB Type-C 连接电脑后，**长按电源键约 2 秒**直到绿色 LED 亮起再松开，然后执行 `idf.py flash`。
-
-每台设备烧录同一镜像。物理射频信道可在 `idf.py menuconfig` → **ESP-NOW Walkie-Talkie** → **Physical Wi-Fi channel** 中修改（默认 6）。
+- 电量计不可用或尚未就绪时显示 0%
+- 按键是 ADC 分压，同一时间只识别一个键；松开需约 50 ms 稳定采样，避免发射时误松 PTT
 
 ## 主机测试
 
-不依赖板子即可跑协议与状态机相关测试：
+不依赖板子即可跑协议与状态机测试：
 
 ```sh
 cmake -S tests -B build-host
 cmake --build build-host
 ctest --test-dir build-host --output-on-failure
 ```
-
-## 限制与预期
-
-- 室内穿一堵普通墙约 10–20 m；开阔约 50 m 为期望值，非硬性指标
-- 每逻辑频道超过约 8 台设备不保证稳定
-- 丢包表现为短暂音频缺陷，不应卡死或复位
-- 发射端丢失 `TALK_END` 时，接收端会在短超时后释放发言权

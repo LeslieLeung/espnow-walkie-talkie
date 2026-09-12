@@ -8,4 +8,12 @@ config WALKIE_RADIO_CHANNEL
         All devices must use the same physical channel. CH1-CH4 in the UI are
         logical protocol channels and do not retune the radio.
 
+config WALKIE_DIAGNOSTICS
+    bool "Enable periodic runtime diagnostics"
+    default n
+    help
+        Report task stack headroom, battery reads, UI/LVGL handler runs, and
+        display flushes. Keep disabled in production so diagnostic logging does
+        not wake an otherwise idle system.
+
 endmenu

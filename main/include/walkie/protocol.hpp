@@ -38,6 +38,7 @@ enum class BoardType : uint8_t {
     Unknown = 0,
     StickS3 = 1,
     StopWatch = 2,
+    AiPassport = 3,
 };
 
 using DeviceId = std::array<uint8_t, 6>;

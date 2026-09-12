@@ -12,6 +12,7 @@ add_executable(walkie_host_tests
     ../main/presence.cpp
     ../main/protocol.cpp
     ../main/talk_controller.cpp)
+target_sources(walkie_host_tests PRIVATE ../main/ui_model.cpp)
 target_include_directories(walkie_host_tests PRIVATE ../main/include)
 target_compile_features(walkie_host_tests PRIVATE cxx_std_17)
 target_compile_options(walkie_host_tests PRIVATE -Wall -Wextra -Werror -pedantic)

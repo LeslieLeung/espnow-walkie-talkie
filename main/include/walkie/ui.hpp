@@ -1,43 +1,13 @@
 #pragma once
 
 #include "walkie/bsp.hpp"
-#include "walkie/navigation.hpp"
-#include "walkie/presence.hpp"
-#include "walkie/talk_controller.hpp"
-
-#include <array>
-#include <cstdint>
+#include "walkie/ui_model.hpp"
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 
 namespace walkie {
-
-struct UiPeer {
-    std::array<char, 9> name{};
-    uint8_t battery_percent{0};
-    protocol::DeviceState state{protocol::DeviceState::Idle};
-    int8_t rssi{0};
-    bool occupied{false};
-};
-
-struct UiSnapshot {
-    UiPage page{UiPage::Main};
-    uint8_t logical_channel{1};
-    uint8_t battery_percent{0};
-    uint8_t online_count{0};
-    TalkState talk_state{TalkState::Idle};
-    uint8_t remaining_seconds{30};
-    std::array<char, 9> speaker_name{};
-    bool backlight_on{true};
-    bool weak_signal{false};
-    uint8_t menu_index{0};
-    uint8_t volume_index{2};
-    uint8_t volume_percent{50};
-    uint8_t peer_count{0};
-    uint8_t device_offset{0};
-    std::array<UiPeer, PresenceManager::kMaxPeers> peers{};
-};
 
 class Ui {
 public:
@@ -50,7 +20,9 @@ private:
     void run();
 
     BoardBsp& bsp_;
-    QueueHandle_t queue_{nullptr};
+    SemaphoreHandle_t model_mutex_{nullptr};
+    TaskHandle_t task_handle_{nullptr};
+    UiDeliveryPolicy delivery_{};
 };
 
 }  // namespace walkie

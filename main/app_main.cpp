@@ -40,6 +40,10 @@ constexpr uint32_t kAudioTaskStackBytes = 6144;
 constexpr uint32_t kNotificationTaskStackBytes = 4096;
 constexpr uint32_t kBspRetryMagic = 0x42535052U;  // "BSPR"
 constexpr uint32_t kMaximumBspRetries = 2;
+constexpr uint32_t kPresenceMaintenanceMs = 250;
+constexpr uint32_t kRxDiagnosticsMs = 100;
+constexpr uint32_t kUiCheckScreenOnMs = 100;
+constexpr uint32_t kUiCheckScreenOffMs = 500;
 
 RTC_NOINIT_ATTR uint32_t g_bsp_retry_magic;
 RTC_NOINIT_ATTR uint32_t g_bsp_retry_count;
@@ -218,7 +222,6 @@ void notification_task(void*) {
         }
         if (g_bsp.start_playback(g_volume_percent.load())) {
             g_bsp.tone(request.frequency_hz, request.duration_ms);
-            vTaskDelay(pdMS_TO_TICKS(request.duration_ms));
             g_bsp.stop_playback();
         }
         xSemaphoreGive(g_audio_owner);
@@ -293,7 +296,7 @@ extern "C" void app_main() {
             vTaskDelay(pdMS_TO_TICKS(100));
             esp_restart();
         }
-        ESP_LOGE(kTag, "Board BSP initialization failed after retries (need StickS3 or StopWatch)");
+        ESP_LOGE(kTag, "Board BSP initialization failed after retries (need a supported board)");
         return;
     }
     g_bsp_retry_magic = kBspRetryMagic;
@@ -340,25 +343,37 @@ extern "C" void app_main() {
     std::array<char, wp::kDeviceNameSize> local_name{};
     format_device_name(g_bsp.name_prefix(), local_id, local_name);
     uint32_t last_input_ms = now_ms();
-    uint32_t next_heartbeat_ms = now_ms();
+    const uint32_t startup_ms = now_ms();
+    uint32_t next_heartbeat_ms = startup_ms;
     uint32_t next_ui_ms = 0;
+    uint32_t next_presence_ms = startup_ms + kPresenceMaintenanceMs;
+    uint32_t next_rx_diagnostics_ms = startup_ms + kRxDiagnosticsMs;
     uint32_t weak_signal_until_ms = 0;
     uint32_t observed_dropped_rx_frames = 0;
+#if CONFIG_WALKIE_DIAGNOSTICS
     uint32_t next_stack_report_ms = now_ms() + 5000;
+    uint32_t battery_sample_count = 1;
+#endif
     bool backlight_on = true;
+    BatterySamplePolicy battery_policy;
+    uint8_t cached_battery_percent = static_cast<uint8_t>(g_bsp.battery_percent());
+    battery_policy.sampled(startup_ms);
+    UiSnapshot last_published_snapshot{};
+    bool has_published_snapshot = false;
 
     ESP_LOGI(kTag, "Ready as %s on logical CH%u / radio CH%u",
              local_name.data(), settings.logical_channel, kRadioChannel);
 
     for (;;) {
         const uint32_t now = now_ms();
+        const TalkState talk_state_at_loop_start = controller.snapshot().state;
         const ButtonEvents buttons = g_bsp.poll_buttons();
         if (buttons.a_pressed || buttons.a_released || buttons.b_clicked || buttons.b_held) {
             const bool was_off = !backlight_on;
             last_input_ms = now;
             if (was_off) {
                 backlight_on = true;
-                g_bsp.set_backlight(true);
+                next_ui_ms = now;
             }
             if (!was_off) {
                 if (navigation.active()) {
@@ -392,7 +407,7 @@ extern "C" void app_main() {
                 apply_actions(controller.ptt_pressed(now, esp_random(), esp_random()), controller);
             }
         }
-        navigation.tick(now);
+        if (navigation.tick(now)) next_ui_ms = now;
 
         ReceivedFrame received{};
         while (g_transport.receive(received)) {
@@ -457,35 +472,54 @@ extern "C" void app_main() {
         }
 
         apply_actions(controller.tick(now), controller);
+        if (controller.snapshot().state != talk_state_at_loop_start) next_ui_ms = now;
         if (talk_activity_keeps_screen_awake(controller.snapshot().state)) {
             last_input_ms = now;
             if (!backlight_on) {
                 backlight_on = true;
-                g_bsp.set_backlight(true);
                 next_ui_ms = now;
             }
         } else if (backlight_on && static_cast<uint32_t>(now - last_input_ms) >= 30000) {
             backlight_on = false;
-            g_bsp.set_backlight(false);
+            next_ui_ms = now;
         }
-        presence.expire(now);
-        const uint32_t dropped_rx_frames = g_transport.dropped_rx_frames();
-        if (dropped_rx_frames != observed_dropped_rx_frames) {
-            observed_dropped_rx_frames = dropped_rx_frames;
-            weak_signal_until_ms = now + 1500;
+
+        if (battery_policy.due(now, backlight_on, controller.snapshot().state)) {
+            cached_battery_percent = static_cast<uint8_t>(g_bsp.battery_percent());
+            battery_policy.sampled(now);
+#if CONFIG_WALKIE_DIAGNOSTICS
+            ++battery_sample_count;
+#endif
+            next_ui_ms = now;
         }
+        if (deadline_reached(now, next_presence_ms)) {
+            if (presence.expire(now) != 0) next_ui_ms = now;
+            next_presence_ms = now + kPresenceMaintenanceMs;
+        }
+        if (deadline_reached(now, next_rx_diagnostics_ms)) {
+            const uint32_t dropped_rx_frames = g_transport.dropped_rx_frames();
+            if (dropped_rx_frames != observed_dropped_rx_frames) {
+                observed_dropped_rx_frames = dropped_rx_frames;
+                weak_signal_until_ms = now + 1500;
+                next_ui_ms = now;
+            }
+            next_rx_diagnostics_ms = now + kRxDiagnosticsMs;
+        }
+#if CONFIG_WALKIE_DIAGNOSTICS
         if (static_cast<int32_t>(now - next_stack_report_ms) >= 0) {
-            ESP_LOGI(kTag, "Audio stack minimum free: capture=%u playback=%u notify=%u bytes",
+            ESP_LOGI(kTag, "Diagnostics: battery_reads=%u; audio stack free capture=%u playback=%u notify=%u bytes",
+                     static_cast<unsigned>(battery_sample_count),
                      static_cast<unsigned>(uxTaskGetStackHighWaterMark(g_capture_task_handle)),
                      static_cast<unsigned>(uxTaskGetStackHighWaterMark(g_playback_task_handle)),
                      static_cast<unsigned>(uxTaskGetStackHighWaterMark(g_notification_task_handle)));
             next_stack_report_ms = now + 30000;
         }
+#endif
 
         if (static_cast<int32_t>(now - next_heartbeat_ms) >= 0) {
             wp::Heartbeat heartbeat{};
             heartbeat.name = local_name;
-            heartbeat.battery_percent = static_cast<uint8_t>(g_bsp.battery_percent());
+            heartbeat.battery_percent = cached_battery_percent;
             heartbeat.state = wire_state(controller.snapshot().state);
             heartbeat.board = g_bsp.board_type();
             uint8_t payload[16]{};
@@ -496,11 +530,11 @@ extern "C" void app_main() {
             next_heartbeat_ms = now + 1800 + (esp_random() % 401);
         }
 
-        if (static_cast<int32_t>(now - next_ui_ms) >= 0) {
+        if (deadline_reached(now, next_ui_ms)) {
             UiSnapshot snapshot{};
             snapshot.page = navigation.page();
             snapshot.logical_channel = settings.logical_channel;
-            snapshot.battery_percent = static_cast<uint8_t>(g_bsp.battery_percent());
+            snapshot.battery_percent = cached_battery_percent;
             snapshot.online_count = static_cast<uint8_t>(presence.count());
             snapshot.talk_state = controller.snapshot().state;
             snapshot.backlight_on = backlight_on;
@@ -528,8 +562,13 @@ extern "C" void app_main() {
                 ui_peer.rssi = peer.rssi;
                 ui_peer.occupied = true;
             }
-            ui.publish(snapshot);
-            next_ui_ms = now + 100;
+            if (!has_published_snapshot || !ui_snapshots_equal(snapshot, last_published_snapshot)) {
+                if (ui.publish(snapshot)) {
+                    last_published_snapshot = snapshot;
+                    has_published_snapshot = true;
+                }
+            }
+            next_ui_ms = now + (backlight_on ? kUiCheckScreenOnMs : kUiCheckScreenOffMs);
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }

@@ -35,6 +35,7 @@ bool BoardBsp::initialize() {
     // uint16_t pushImage overload otherwise treats the source as byte-swapped RGB565.
     M5.Display.setSwapBytes(true);
     M5.Display.setBrightness(128);
+    display_awake_.store(true);
     M5.Speaker.end();
     return true;
 }
@@ -58,17 +59,30 @@ int BoardBsp::battery_percent() const {
     return level < 0 ? 0 : (level > 100 ? 100 : level);
 }
 
-void BoardBsp::set_backlight(bool enabled) {
-    M5.Display.setBrightness(enabled ? 128 : 0);
+bool BoardBsp::display_sleep() {
+    if (!display_awake_.exchange(false)) return false;
+    M5.Display.setBrightness(0);
+    M5.Display.sleep();
+    return true;
+}
+
+bool BoardBsp::display_wakeup() {
+    if (display_awake_.load()) return false;
+    M5.Display.wakeup();
+    M5.Display.setBrightness(128);
+    display_awake_.store(true);
+    return true;
 }
 
 int BoardBsp::display_width() const { return M5.Display.width(); }
 int BoardBsp::display_height() const { return M5.Display.height(); }
 
-void BoardBsp::display_flush(int x, int y, int width, int height, const uint16_t* pixels) {
+bool BoardBsp::display_flush(int x, int y, int width, int height, const uint16_t* pixels) {
+    if (!display_awake_.load()) return false;
     M5.Display.startWrite();
     M5.Display.pushImage(x, y, width, height, pixels);
     M5.Display.endWrite();
+    return true;
 }
 
 bool BoardBsp::start_capture() {
@@ -106,7 +120,9 @@ bool BoardBsp::play(const int16_t* samples, size_t sample_count) {
 }
 
 bool BoardBsp::tone(uint16_t frequency_hz, uint32_t duration_ms) {
-    return M5.Speaker.tone(static_cast<float>(frequency_hz), duration_ms, 0, true);
+    if (!M5.Speaker.tone(static_cast<float>(frequency_hz), duration_ms, 0, true)) return false;
+    if (duration_ms > 0) vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    return true;
 }
 
 }  // namespace walkie

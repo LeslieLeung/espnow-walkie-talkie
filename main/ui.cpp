@@ -2,16 +2,35 @@
 
 #include "walkie/display_policy.hpp"
 
+#include <cstddef>
 #include <cstdio>
 
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "lvgl.h"
 
 namespace walkie {
 namespace {
 
+#if CONFIG_IDF_TARGET_ESP32C3
+// Match the ai-passport BSP: C3 has no PSRAM; 20 DMA rows ≈ 9.6KB.
+constexpr int kDrawRows = 20;
+#else
 constexpr int kDrawRows = 24;
+#endif
+#if CONFIG_FREERTOS_UNICORE
+constexpr BaseType_t kUiCore = 0;
+#else
+constexpr BaseType_t kUiCore = 1;
+#endif
+constexpr char kTag[] = "walkie_ui";
+#if CONFIG_WALKIE_DIAGNOSTICS
+uint32_t g_render_count = 0;
+uint32_t g_handler_count = 0;
+uint32_t g_flush_count = 0;
+uint32_t g_blocked_flush_count = 0;
+#endif
 BoardBsp* g_bsp = nullptr;
 lv_disp_draw_buf_t g_draw_buffer{};
 lv_disp_drv_t g_display_driver{};
@@ -68,6 +87,25 @@ Layout make_layout(const BoardBsp& bsp) {
         layout.body_font = &lv_font_montserrat_20;
         layout.list_font = &lv_font_montserrat_14;
         layout.footer_font = &lv_font_montserrat_14;
+    } else if (bsp.display_width() >= 240 && bsp.display_height() >= 320) {
+        layout.inset = 12;
+        layout.content_width = bsp.display_width() - (layout.inset * 2);
+        layout.header_y = 16;
+        layout.subheader_y = 48;
+        layout.primary_offset_y = -36;
+        layout.body_offset_y = 28;
+        layout.footer_offset_y = -16;
+        layout.menu_x = layout.inset + 24;
+        layout.menu_y = 72;
+        layout.devices_x = layout.inset + 12;
+        layout.devices_y = 64;
+        layout.volume_x = layout.inset + 32;
+        layout.volume_y = 64;
+        layout.header_font = &lv_font_montserrat_20;
+        layout.primary_font = &lv_font_montserrat_28;
+        layout.body_font = &lv_font_montserrat_20;
+        layout.list_font = &lv_font_montserrat_14;
+        layout.footer_font = &lv_font_montserrat_14;
     }
     return layout;
 }
@@ -98,8 +136,17 @@ void flush(lv_disp_drv_t* driver, const lv_area_t* area, lv_color_t* colors) {
     if (g_bsp != nullptr) {
         const int width = area->x2 - area->x1 + 1;
         const int height = area->y2 - area->y1 + 1;
-        g_bsp->display_flush(area->x1, area->y1, width, height,
-                             reinterpret_cast<const uint16_t*>(colors));
+        const bool flushed = g_bsp->display_flush(area->x1, area->y1, width, height,
+                                                  reinterpret_cast<const uint16_t*>(colors));
+#if CONFIG_WALKIE_DIAGNOSTICS
+        if (flushed) {
+            ++g_flush_count;
+        } else {
+            ++g_blocked_flush_count;
+        }
+#else
+        (void)flushed;
+#endif
     }
     lv_disp_flush_ready(driver);
 }
@@ -181,7 +228,10 @@ void render_main(const UiSnapshot& snapshot) {
     } else {
         lv_label_set_text(g_body, "READY");
     }
-    lv_label_set_text(g_footer, "HOLD A TO TALK\nB: CHANNEL   HOLD B: MENU");
+    lv_label_set_text(g_footer,
+                      g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
+                          ? "HOLD OK TO TALK\nUP/DN: CHANNEL   HOLD: MENU"
+                          : "HOLD A TO TALK\nB: CHANNEL   HOLD B: MENU");
 }
 
 void render_menu(const UiSnapshot& snapshot) {
@@ -194,7 +244,10 @@ void render_menu(const UiSnapshot& snapshot) {
     lv_label_set_text_fmt(g_body, "%s DEVICES\n\n%s SETTINGS\n\n%s EXIT", marker0, marker1, marker2);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.menu_x, g_layout.menu_y);
-    lv_label_set_text(g_footer, "B: NEXT   A: OPEN\nHOLD B: BACK");
+    lv_label_set_text(g_footer,
+                      g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
+                          ? "UP/DN: NEXT   OK: OPEN\nHOLD: BACK"
+                          : "B: NEXT   A: OPEN\nHOLD B: BACK");
 }
 
 void render_devices(const UiSnapshot& snapshot) {
@@ -222,7 +275,10 @@ void render_devices(const UiSnapshot& snapshot) {
     lv_obj_set_style_text_font(g_body, g_layout.list_font, 0);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.devices_x, g_layout.devices_y);
-    lv_label_set_text(g_footer, "B: SCROLL   HOLD B: BACK");
+    lv_label_set_text(g_footer,
+                      g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
+                          ? "UP/DN: SCROLL   HOLD: BACK"
+                          : "B: SCROLL   HOLD B: BACK");
 }
 
 void render_volume(const UiSnapshot& snapshot) {
@@ -237,7 +293,10 @@ void render_volume(const UiSnapshot& snapshot) {
                           snapshot.volume_index == 3 ? ">" : " ", names[3]);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.volume_x, g_layout.volume_y);
-    lv_label_set_text(g_footer, "B: NEXT   A: SAVE\nHOLD B: BACK");
+    lv_label_set_text(g_footer,
+                      g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
+                          ? "UP/DN: NEXT   OK: SAVE\nHOLD: BACK"
+                          : "B: NEXT   A: SAVE\nHOLD B: BACK");
 }
 
 void render(const UiSnapshot& snapshot) {
@@ -251,16 +310,46 @@ void render(const UiSnapshot& snapshot) {
     }
 }
 
+bool alloc_draw_buffer(int width) {
+    const size_t bytes = static_cast<size_t>(width * kDrawRows) * sizeof(lv_color_t);
+    g_pixels = static_cast<lv_color_t*>(
+        heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    if (g_pixels == nullptr) {
+        g_pixels = static_cast<lv_color_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM));
+    }
+    return g_pixels != nullptr;
+}
+
 }  // namespace
 
 bool Ui::start() {
-    queue_ = xQueueCreate(1, sizeof(UiSnapshot));
-    if (queue_ == nullptr) return false;
-    return xTaskCreatePinnedToCore(task_entry, "walkie_ui", 6144, this, 2, nullptr, 1) == pdPASS;
+    model_mutex_ = xSemaphoreCreateMutex();
+    if (model_mutex_ == nullptr) return false;
+    if (!alloc_draw_buffer(bsp_.display_width())) {
+        ESP_LOGE(kTag, "LVGL draw buffer alloc failed (%d x %d)", bsp_.display_width(), kDrawRows);
+        vSemaphoreDelete(model_mutex_);
+        model_mutex_ = nullptr;
+        return false;
+    }
+    if (xTaskCreatePinnedToCore(task_entry, "walkie_ui", 6144, this, 2, &task_handle_,
+                                kUiCore) != pdPASS) {
+        heap_caps_free(g_pixels);
+        g_pixels = nullptr;
+        vSemaphoreDelete(model_mutex_);
+        model_mutex_ = nullptr;
+        task_handle_ = nullptr;
+        return false;
+    }
+    return true;
 }
 
 bool Ui::publish(const UiSnapshot& snapshot) {
-    return queue_ != nullptr && xQueueOverwrite(queue_, &snapshot) == pdTRUE;
+    if (model_mutex_ == nullptr || task_handle_ == nullptr) return false;
+    if (xSemaphoreTake(model_mutex_, portMAX_DELAY) != pdTRUE) return false;
+    const bool notify = delivery_.publish(snapshot);
+    xSemaphoreGive(model_mutex_);
+    if (notify) xTaskNotifyGive(task_handle_);
+    return true;
 }
 
 void Ui::task_entry(void* context) {
@@ -273,14 +362,9 @@ void Ui::run() {
     lv_init();
     const int width = bsp_.display_width();
     const int height = bsp_.display_height();
-    // Prefer internal DMA RAM; fall back to PSRAM for the larger StopWatch panel.
-    g_pixels = static_cast<lv_color_t*>(heap_caps_malloc(
-        static_cast<size_t>(width * kDrawRows) * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     if (g_pixels == nullptr) {
-        g_pixels = static_cast<lv_color_t*>(heap_caps_malloc(
-            static_cast<size_t>(width * kDrawRows) * sizeof(lv_color_t), MALLOC_CAP_SPIRAM));
-    }
-    if (g_pixels == nullptr) {
+        ESP_LOGE(kTag, "LVGL draw buffer missing (%d x %d)", width, kDrawRows);
+        task_handle_ = nullptr;
         vTaskDelete(nullptr);
         return;
     }
@@ -290,18 +374,72 @@ void Ui::run() {
     g_display_driver.ver_res = height;
     g_display_driver.flush_cb = flush;
     g_display_driver.draw_buf = &g_draw_buffer;
-    lv_disp_drv_register(&g_display_driver);
+    lv_disp_t* display = lv_disp_drv_register(&g_display_driver);
     create_screen(width, height);
 
     UiSnapshot snapshot{};
     uint32_t last_tick_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    TickType_t wait_ticks = portMAX_DELAY;
+    DisplayPowerPolicy display_power;
+#if CONFIG_WALKIE_DIAGNOSTICS
+    uint32_t sleep_handler_count = 0;
+    uint32_t sleep_flush_count = 0;
+    uint32_t sleep_blocked_flush_count = 0;
+#endif
     for (;;) {
-        if (xQueueReceive(queue_, &snapshot, pdMS_TO_TICKS(10)) == pdTRUE) render(snapshot);
+        const bool notified = ulTaskNotifyTake(pdTRUE, wait_ticks) != 0;
         const uint32_t tick_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
         lv_tick_inc(tick_ms - last_tick_ms);
         last_tick_ms = tick_ms;
-        lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(5));
+
+        if (notified) {
+            xSemaphoreTake(model_mutex_, portMAX_DELAY);
+            if (delivery_.has_snapshot()) snapshot = delivery_.latest();
+            xSemaphoreGive(model_mutex_);
+
+            if (!snapshot.backlight_on) {
+                if (display_power.set_awake(false) == DisplayTransition::Sleep) {
+                    bsp_.display_sleep();
+#if CONFIG_WALKIE_DIAGNOSTICS
+                    sleep_handler_count = g_handler_count;
+                    sleep_flush_count = g_flush_count;
+                    sleep_blocked_flush_count = g_blocked_flush_count;
+                    ESP_LOGI(kTag, "Panel sleep: renders=%u handlers=%u flushes=%u blocked_flushes=%u",
+                             static_cast<unsigned>(g_render_count),
+                             static_cast<unsigned>(g_handler_count),
+                             static_cast<unsigned>(g_flush_count),
+                             static_cast<unsigned>(g_blocked_flush_count));
+#endif
+                }
+                wait_ticks = portMAX_DELAY;
+                continue;
+            }
+
+            if (display_power.set_awake(true) == DisplayTransition::Wake) {
+                // The controller must be awake before LVGL can issue the first flush.
+                bsp_.display_wakeup();
+#if CONFIG_WALKIE_DIAGNOSTICS
+                ESP_LOGI(kTag, "Panel wake: during_sleep handlers=%u flushes=%u blocked_flushes=%u",
+                         static_cast<unsigned>(g_handler_count - sleep_handler_count),
+                         static_cast<unsigned>(g_flush_count - sleep_flush_count),
+                         static_cast<unsigned>(g_blocked_flush_count - sleep_blocked_flush_count));
+#endif
+            }
+            render(snapshot);
+#if CONFIG_WALKIE_DIAGNOSTICS
+            ++g_render_count;
+#endif
+            lv_obj_invalidate(g_screen);
+            lv_refr_now(display);
+        }
+
+        const uint32_t next_timer_ms = lv_timer_handler();
+#if CONFIG_WALKIE_DIAGNOSTICS
+        ++g_handler_count;
+#endif
+        wait_ticks = next_timer_ms == LV_NO_TIMER_READY
+                         ? portMAX_DELAY
+                         : pdMS_TO_TICKS(next_timer_ms == 0 ? 1 : next_timer_ms);
     }
 }
 
