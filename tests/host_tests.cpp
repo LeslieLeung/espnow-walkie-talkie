@@ -7,6 +7,7 @@
 #include "walkie/protocol.hpp"
 #include "walkie/talk_controller.hpp"
 #include "walkie/ui_model.hpp"
+#include "walkie/vox.hpp"
 
 #include <array>
 #include <cassert>
@@ -397,9 +398,15 @@ void test_arbitration_and_timeout() {
 }
 
 void test_navigation() {
+    assert(classify_channel_button(true, false, false) == ChannelButtonAction::OpenMenu);
+    assert(classify_channel_button(true, true, false) == ChannelButtonAction::OpenMenu);
+    assert(classify_channel_button(false, true, true) == ChannelButtonAction::CycleChannel);
+    assert(classify_channel_button(false, true, false) == ChannelButtonAction::None);
+    assert(classify_channel_button(false, false, true) == ChannelButtonAction::None);
+
     NavigationController navigation;
     assert(!navigation.active());
-    navigation.open(100, 50);
+    navigation.open(100, 50, 0);
     assert(navigation.page() == UiPage::Menu);
     assert(navigation.menu_index() == 0);
     navigation.short_a(110);
@@ -422,10 +429,54 @@ void test_navigation() {
     assert(navigation.tick(10170) == true);
     assert(navigation.page() == UiPage::Main);
 
-    navigation.open(20000, 255);
+    navigation.open(20000, 255, 0);
     assert(navigation.volume_percent() == 75);
     navigation.long_b(20001);
     assert(navigation.page() == UiPage::Main);
+
+    navigation.open(30000, 50, 2);
+    navigation.short_b(30010, 0);
+    navigation.short_b(30020, 0);
+    assert(navigation.menu_index() == 2);
+    navigation.short_a(30030);
+    assert(navigation.page() == UiPage::Vox);
+    assert(navigation.vox_level() == 2);
+    assert(navigation.vox_enabled());
+    navigation.short_b(30040, 0);
+    assert(navigation.vox_level() == 3);
+    navigation.short_b(30041, 0);
+    assert(navigation.vox_level() == 0);
+    assert(!navigation.vox_enabled());
+    navigation.short_b(30042, 0);
+    assert(navigation.vox_level() == 1);
+    assert(navigation.short_a(30050) == NavigationAction::SaveVox);
+    assert(navigation.page() == UiPage::Menu);
+
+    navigation.open(31000, 50, 9);
+    navigation.short_b(31010, 0);
+    navigation.short_b(31020, 0);
+    navigation.short_a(31030);
+    assert(navigation.vox_level() == 0);
+}
+
+void test_menu_interrupts_talk() {
+    TalkController talk(id(1));
+    talk.ptt_pressed(1000, 1, 11);
+    talk.tick(1015);
+    assert((talk.tick(1100) & StartCapture) != 0);
+    assert(talk.snapshot().state == TalkState::Talking);
+    assert(classify_channel_button(true, false, talk.snapshot().state == TalkState::Idle) ==
+           ChannelButtonAction::OpenMenu);
+
+    const Actions ended = talk.ptt_released(1500);
+    assert((ended & SendEnd) != 0);
+    assert((ended & StopCapture) != 0);
+    assert(talk.snapshot().state == TalkState::Idle);
+
+    NavigationController navigation;
+    navigation.open(1500, 50, 2);
+    assert(navigation.page() == UiPage::Menu);
+    assert(navigation.vox_enabled());
 }
 
 audio::EncodedAudioFrame audio_frame(uint32_t session, uint16_t sequence) {
@@ -530,6 +581,120 @@ void test_eight_device_simulation() {
     }
 }
 
+void test_vox() {
+    assert(normalize_vox_level(0) == VoxLevel::Off);
+    assert(normalize_vox_level(3) == VoxLevel::High);
+    assert(normalize_vox_level(9) == VoxLevel::Off);
+    assert(!vox_enabled(VoxLevel::Off));
+    assert(vox_enabled(VoxLevel::Med));
+    assert(vox_profile(VoxLevel::High).vad_mode == audio::VoiceActivityDetector::kMode);
+    assert(vox_profile(VoxLevel::High).min_mean_abs == audio::VoiceActivityDetector::kMinMeanAbs);
+    assert(vox_profile(VoxLevel::High).attack_frames == audio::VoxGate::kAttackFrames);
+    assert(vox_profile(VoxLevel::Low).min_mean_abs > vox_profile(VoxLevel::Med).min_mean_abs);
+    assert(vox_profile(VoxLevel::Med).min_mean_abs > vox_profile(VoxLevel::High).min_mean_abs);
+    assert(vox_profile(VoxLevel::Low).noise_margin > vox_profile(VoxLevel::Med).noise_margin);
+    assert(vox_profile(VoxLevel::High).noise_margin == 0);
+    assert(vox_profile(VoxLevel::Low).attack_frames > vox_profile(VoxLevel::High).attack_frames);
+    assert(vox_profile(VoxLevel::Low).learn_frames > 0);
+    assert(vox_active(2));
+    assert(!vox_active(0));
+    assert(!vox_active(9));
+    assert(kVoxTimeoutCooldownMs >= 1000);
+    assert(vox_cooling_down(0, kVoxTimeoutCooldownMs));
+    assert(!vox_cooling_down(kVoxTimeoutCooldownMs, kVoxTimeoutCooldownMs));
+    assert(!vox_cooling_down(kVoxTimeoutCooldownMs + 1, kVoxTimeoutCooldownMs));
+
+    audio::VoxGate gate;
+    assert(gate.observe(true, false) == audio::VoxDecision::None);
+    assert(gate.observe(true, false) == audio::VoxDecision::None);
+    assert(gate.observe(true, false) == audio::VoxDecision::Press);
+    assert(gate.latched());
+    for (int i = 0; i < 40; ++i) {
+        assert(gate.observe(false, false) == audio::VoxDecision::None);
+    }
+    assert(gate.latched());
+    for (uint8_t i = 1; i < audio::VoxGate::kHangFrames; ++i) {
+        assert(gate.observe(false, true) == audio::VoxDecision::None);
+    }
+    assert(gate.observe(false, true) == audio::VoxDecision::Release);
+    assert(!gate.latched());
+
+    audio::VoxGate slow;
+    slow.set_attack_frames(vox_profile(VoxLevel::Low).attack_frames);
+    for (uint8_t i = 1; i < vox_profile(VoxLevel::Low).attack_frames; ++i) {
+        assert(slow.observe(true, false) == audio::VoxDecision::None);
+    }
+    assert(slow.observe(true, false) == audio::VoxDecision::Press);
+
+    audio::PcmPreroll preroll;
+    int16_t first[wp::kAudioSamples]{};
+    int16_t second[wp::kAudioSamples]{};
+    first[0] = 11;
+    second[0] = 22;
+    preroll.push(first);
+    preroll.push(second);
+    assert(preroll.size() == 2);
+    assert(preroll.frame(0) != nullptr && preroll.frame(0)[0] == 11);
+    assert(preroll.frame(1) != nullptr && preroll.frame(1)[0] == 22);
+    for (size_t i = 0; i < audio::PcmPreroll::kFrames + 3; ++i) {
+        preroll.push(second);
+    }
+    assert(preroll.size() == audio::PcmPreroll::kFrames);
+    assert(preroll.frame(audio::PcmPreroll::kFrames - 1)[0] == 22);
+    preroll.clear();
+    assert(preroll.size() == 0);
+    assert(preroll.frame(0) == nullptr);
+
+    audio::VoiceActivityDetector vad;
+    assert(vad.start());
+    int16_t silence[wp::kAudioSamples]{};
+    assert(!vad.is_speech(silence, wp::kAudioSamples));
+    assert(vad.apply_profile(VoxLevel::Low));
+    int16_t quiet[wp::kAudioSamples];
+    for (size_t i = 0; i < wp::kAudioSamples; ++i) quiet[i] = 200;
+    assert(!vad.is_speech(quiet, wp::kAudioSamples));
+
+    int16_t office[wp::kAudioSamples];
+    for (size_t i = 0; i < wp::kAudioSamples; ++i) office[i] = 2500;
+    const uint8_t settle = static_cast<uint8_t>(vox_profile(VoxLevel::Low).learn_frames + 8);
+    for (uint8_t i = 0; i < settle; ++i) {
+        assert(!vad.is_speech(office, wp::kAudioSamples, true));
+    }
+    assert(vad.energy_threshold() >= vox_profile(VoxLevel::Low).min_mean_abs);
+
+    int16_t loud_office[wp::kAudioSamples];
+    for (size_t i = 0; i < wp::kAudioSamples; ++i) loud_office[i] = 9000;
+    assert(vad.apply_profile(VoxLevel::Low));
+    for (uint8_t i = 0; i < settle; ++i) {
+        assert(!vad.is_speech(loud_office, wp::kAudioSamples, true));
+    }
+    assert(vad.energy_threshold() > 9000);
+    const int32_t after_learn = vad.energy_threshold();
+    for (int i = 0; i < 20; ++i) {
+        assert(!vad.is_speech(loud_office, wp::kAudioSamples, false));
+    }
+    assert(vad.energy_threshold() == after_learn);
+    assert(!vad.is_speech(loud_office, wp::kAudioSamples, true));
+
+    assert(vad.apply_profile(VoxLevel::Low));
+    for (uint8_t i = 0; i < settle; ++i) {
+        assert(!vad.is_speech(silence, wp::kAudioSamples, true));
+    }
+    const int32_t quiet_floor = vad.energy_threshold();
+    int16_t tone[wp::kAudioSamples];
+    for (size_t i = 0; i < wp::kAudioSamples; ++i) {
+        tone[i] = static_cast<int16_t>(
+            22000.0 * std::sin(2.0 * 3.141592653589793 * 1000.0 *
+                               static_cast<double>(i) / 16000.0));
+    }
+    bool heard = false;
+    for (int i = 0; i < 12; ++i) {
+        if (vad.is_speech(tone, wp::kAudioSamples, true)) heard = true;
+    }
+    if (heard) assert(vad.energy_threshold() == quiet_floor);
+    vad.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -544,8 +709,10 @@ int main() {
     test_arbitration_and_timeout();
     test_start_conflict_resolution();
     test_navigation();
+    test_menu_interrupts_talk();
     test_jitter_buffer();
     test_eight_device_simulation();
+    test_vox();
     std::cout << "walkie host tests: PASS\n";
     return 0;
 }

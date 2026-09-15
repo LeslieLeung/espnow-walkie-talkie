@@ -30,6 +30,9 @@ struct UiSnapshot {
     uint8_t menu_index{0};
     uint8_t volume_index{2};
     uint8_t volume_percent{50};
+    uint8_t vox_index{0};
+    uint8_t vox_level{0};
+    bool vox_enabled{false};
     uint8_t peer_count{0};
     uint8_t device_offset{0};
     std::array<UiPeer, PresenceManager::kMaxPeers> peers{};

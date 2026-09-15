@@ -9,6 +9,7 @@
 #include "walkie/settings.hpp"
 #include "walkie/talk_controller.hpp"
 #include "walkie/ui.hpp"
+#include "walkie/vox.hpp"
 
 #include <algorithm>
 #include <array>
@@ -36,7 +37,9 @@ constexpr char kTag[] = "walkie";
 constexpr uint8_t kRadioChannel = CONFIG_WALKIE_RADIO_CHANNEL;
 constexpr EventBits_t kCaptureBit = 1U << 0;
 constexpr EventBits_t kPlaybackBit = 1U << 1;
-constexpr uint32_t kAudioTaskStackBytes = 6144;
+constexpr EventBits_t kListenBit = 1U << 2;
+constexpr EventBits_t kMicBits = kCaptureBit | kListenBit;
+constexpr uint32_t kAudioTaskStackBytes = 8192;
 constexpr uint32_t kNotificationTaskStackBytes = 4096;
 constexpr uint32_t kBspRetryMagic = 0x42535052U;  // "BSPR"
 constexpr uint32_t kMaximumBspRetries = 2;
@@ -53,6 +56,7 @@ EspNowTransport g_transport;
 EventGroupHandle_t g_audio_events = nullptr;
 QueueHandle_t g_playback_queue = nullptr;
 QueueHandle_t g_notification_queue = nullptr;
+QueueHandle_t g_vox_queue = nullptr;
 SemaphoreHandle_t g_audio_owner = nullptr;
 TaskHandle_t g_capture_task_handle = nullptr;
 TaskHandle_t g_playback_task_handle = nullptr;
@@ -61,6 +65,15 @@ std::atomic<uint8_t> g_logical_channel{1};
 std::atomic<uint8_t> g_volume_percent{50};
 std::atomic<uint32_t> g_tx_session{0};
 std::atomic<uint16_t> g_tx_sequence{0};
+std::atomic<bool> g_physical_ptt{false};
+std::atomic<uint8_t> g_vox_level{0};
+std::atomic<bool> g_vox_reset{false};
+std::atomic<bool> g_hold_listen{false};
+std::atomic<bool> g_preserve_preroll{false};
+std::atomic<uint8_t> g_pending_cues{0};
+std::atomic<uint32_t> g_vox_cooldown_until{0};
+
+enum class VoxEvent : uint8_t { Press, Release };
 
 struct ToneRequest {
     uint16_t frequency_hz{0};
@@ -73,6 +86,7 @@ struct ToneRequest {
 struct CaptureTaskBuffers {
     std::array<std::array<int16_t, wp::kAudioSamples>, 3> pcm{};
     std::array<uint8_t, wp::kAudioPayloadSize> payload{};
+    audio::PcmPreroll preroll{};
 };
 
 struct PlaybackTaskBuffers {
@@ -116,21 +130,94 @@ void send_control_repeated(wp::MessageType type, uint32_t session_id,
     }
 }
 
+bool encode_and_send(const int16_t* samples, audio::AdpcmState& encoder_state) {
+    auto& payload = g_capture_buffers.payload;
+    const audio::AdpcmState initial = encoder_state;
+    payload[0] = static_cast<uint8_t>(static_cast<uint16_t>(initial.predictor) >> 8);
+    payload[1] = static_cast<uint8_t>(initial.predictor);
+    payload[2] = initial.step_index;
+    payload[3] = 0;
+    if (!audio::encode_ima_adpcm(samples, wp::kAudioSamples, payload.data() + 4, wp::kAdpcmBytes,
+                                 encoder_state)) {
+        return false;
+    }
+    const uint16_t sequence = g_tx_sequence.fetch_add(1);
+    return send_packet(make_header(wp::MessageType::Audio, g_tx_session.load(), sequence),
+                       payload.data(), payload.size());
+}
+
+void apply_vox_profile(audio::VoiceActivityDetector& vad, audio::VoxGate& gate, uint8_t level) {
+    const VoxLevel vox = normalize_vox_level(level);
+    if (!vox_enabled(vox)) return;
+    const VoxProfile profile = vox_profile(vox);
+    if (!vad.apply_profile(vox)) {
+        ESP_LOGW(kTag, "VOX profile apply failed");
+    }
+    gate.set_attack_frames(profile.attack_frames);
+}
+
+void finish_audio_cue() {
+    if (g_pending_cues.load() == 0) {
+        g_hold_listen.store(false);
+        return;
+    }
+    if (g_pending_cues.fetch_sub(1) == 1) g_hold_listen.store(false);
+}
+
+void queue_audio_cue(uint16_t frequency_hz, uint16_t duration_ms, uint32_t expires_at_ms,
+                     bool preserve_preroll) {
+    const bool listening = (xEventGroupGetBits(g_audio_events) & kListenBit) != 0;
+    if (preserve_preroll && listening) g_preserve_preroll.store(true);
+    g_pending_cues.fetch_add(1);
+    g_hold_listen.store(true);
+    xEventGroupClearBits(g_audio_events, kListenBit);
+    const ToneRequest request{frequency_hz, duration_ms, expires_at_ms};
+    if (xQueueSend(g_notification_queue, &request, 0) != pdTRUE) {
+        if (preserve_preroll) g_preserve_preroll.store(false);
+        finish_audio_cue();
+    }
+}
+
 void capture_task(void*) {
     audio::AdpcmState encoder_state{};
+    audio::VoiceActivityDetector vad;
+    audio::VoxGate gate;
+    auto& preroll = g_capture_buffers.preroll;
+    const bool vad_ready = vad.start();
+    if (!vad_ready) ESP_LOGW(kTag, "WebRTC VAD init failed; VOX disabled");
     size_t record_index = 0;
     size_t queued = 0;
+    bool flushed_preroll = false;
+    bool was_capturing = false;
+    uint8_t applied_vox_level = 255;
     for (;;) {
-        xEventGroupWaitBits(g_audio_events, kCaptureBit, pdFALSE, pdTRUE, portMAX_DELAY);
+        xEventGroupWaitBits(g_audio_events, kMicBits, pdFALSE, pdFALSE, portMAX_DELAY);
         xSemaphoreTake(g_audio_owner, portMAX_DELAY);
         encoder_state = {};
         record_index = 0;
         queued = 0;
+        flushed_preroll = false;
+        was_capturing = false;
+        if (g_vox_reset.exchange(false)) gate.reset();
         if (!g_bsp.start_capture()) {
             ESP_LOGE(kTag, "Microphone start failed");
-            xEventGroupClearBits(g_audio_events, kCaptureBit);
+            xEventGroupClearBits(g_audio_events, kMicBits);
+            if (!g_preserve_preroll.exchange(false)) {
+                preroll.clear();
+                gate.reset();
+            }
+            xSemaphoreGive(g_audio_owner);
+            continue;
         }
-        while ((xEventGroupGetBits(g_audio_events) & kCaptureBit) != 0) {
+        while ((xEventGroupGetBits(g_audio_events) & kMicBits) != 0) {
+            if (g_vox_reset.exchange(false)) gate.reset();
+            const uint8_t vox_level = g_vox_level.load();
+            if (vox_level != applied_vox_level) {
+                const bool profile_changed = applied_vox_level != 255;
+                applied_vox_level = vox_level;
+                if (vad_ready) apply_vox_profile(vad, gate, vox_level);
+                if (profile_changed) gate.reset();
+            }
             if (!g_bsp.queue_capture(g_capture_buffers.pcm[record_index].data(),
                                      g_capture_buffers.pcm[record_index].size())) {
                 vTaskDelay(pdMS_TO_TICKS(1));
@@ -139,23 +226,50 @@ void capture_task(void*) {
             ++queued;
             if (queued >= 3) {
                 const size_t ready = (record_index + 1) % g_capture_buffers.pcm.size();
-                auto& payload = g_capture_buffers.payload;
-                const audio::AdpcmState initial = encoder_state;
-                payload[0] = static_cast<uint8_t>(static_cast<uint16_t>(initial.predictor) >> 8);
-                payload[1] = static_cast<uint8_t>(initial.predictor);
-                payload[2] = initial.step_index;
-                payload[3] = 0;
-                if (audio::encode_ima_adpcm(g_capture_buffers.pcm[ready].data(),
-                                            g_capture_buffers.pcm[ready].size(),
-                                            payload.data() + 4, wp::kAdpcmBytes, encoder_state)) {
-                    const uint16_t sequence = g_tx_sequence.fetch_add(1);
-                    send_packet(make_header(wp::MessageType::Audio, g_tx_session.load(), sequence),
-                                payload.data(), payload.size());
+                const int16_t* samples = g_capture_buffers.pcm[ready].data();
+                const bool capturing = (xEventGroupGetBits(g_audio_events) & kCaptureBit) != 0;
+                if (capturing && !was_capturing) {
+                    encoder_state = {};
+                    flushed_preroll = false;
                 }
+                if (!capturing) preroll.push(samples);
+                const bool vox_on = vox_active(vox_level);
+                const bool speech = vad_ready && vox_on &&
+                                    vad.is_speech(samples, wp::kAudioSamples, !capturing);
+                if (capturing) {
+                    if (!flushed_preroll) {
+                        for (size_t i = 0; i < preroll.size(); ++i) {
+                            if (const int16_t* frame = preroll.frame(i); frame != nullptr) {
+                                encode_and_send(frame, encoder_state);
+                            }
+                        }
+                        preroll.clear();
+                        encode_and_send(samples, encoder_state);
+                        flushed_preroll = true;
+                    } else {
+                        encode_and_send(samples, encoder_state);
+                    }
+                    if (vox_on && !g_physical_ptt.load() &&
+                        gate.observe(speech, true) == audio::VoxDecision::Release) {
+                        const VoxEvent event = VoxEvent::Release;
+                        xQueueSend(g_vox_queue, &event, 0);
+                    }
+                } else if (vox_cooling_down(now_ms(), g_vox_cooldown_until.load())) {
+                    gate.reset();
+                } else if (vox_on &&
+                           gate.observe(speech, false) == audio::VoxDecision::Press) {
+                    const VoxEvent event = VoxEvent::Press;
+                    xQueueSend(g_vox_queue, &event, 0);
+                }
+                was_capturing = capturing;
             }
             record_index = (record_index + 1) % g_capture_buffers.pcm.size();
         }
         g_bsp.stop_capture();
+        if (!g_preserve_preroll.exchange(false)) {
+            preroll.clear();
+            gate.reset();
+        }
         xSemaphoreGive(g_audio_owner);
     }
 }
@@ -212,11 +326,18 @@ void notification_task(void*) {
     for (;;) {
         if (xQueueReceive(g_notification_queue, &request, portMAX_DELAY) != pdTRUE) continue;
         if (g_volume_percent.load() == 0 ||
-            static_cast<int32_t>(now_ms() - request.expires_at_ms) > 0) continue;
-        xSemaphoreTake(g_audio_owner, portMAX_DELAY);
+            static_cast<int32_t>(now_ms() - request.expires_at_ms) > 0) {
+            finish_audio_cue();
+            continue;
+        }
+        if (xSemaphoreTake(g_audio_owner, pdMS_TO_TICKS(500)) != pdTRUE) {
+            finish_audio_cue();
+            continue;
+        }
         if (g_volume_percent.load() == 0 ||
             static_cast<int32_t>(now_ms() - request.expires_at_ms) > 0 ||
             (xEventGroupGetBits(g_audio_events) & (kCaptureBit | kPlaybackBit)) != 0) {
+            finish_audio_cue();
             xSemaphoreGive(g_audio_owner);
             continue;
         }
@@ -224,6 +345,7 @@ void notification_task(void*) {
             g_bsp.tone(request.frequency_hz, request.duration_ms);
             g_bsp.stop_playback();
         }
+        finish_audio_cue();
         xSemaphoreGive(g_audio_owner);
     }
 }
@@ -249,19 +371,21 @@ void apply_actions(Actions actions, TalkController& controller) {
     }
     if ((actions & StopCapture) != 0) xEventGroupClearBits(g_audio_events, kCaptureBit);
     if ((actions & StartPlayback) != 0) {
-        xEventGroupClearBits(g_audio_events, kCaptureBit);
+        xEventGroupClearBits(g_audio_events, kMicBits);
         xEventGroupSetBits(g_audio_events, kPlaybackBit);
     }
     if ((actions & StopPlayback) != 0) xEventGroupClearBits(g_audio_events, kPlaybackBit);
     if ((actions & SendEnd) != 0) send_control_repeated(wp::MessageType::TalkEnd, session);
-    if ((actions & TalkTimedOut) != 0) ESP_LOGW(kTag, "Maximum talk time reached");
+    if ((actions & TalkTimedOut) != 0) {
+        ESP_LOGW(kTag, "Maximum talk time reached");
+        g_vox_reset.store(true);
+        g_vox_cooldown_until.store(now_ms() + kVoxTimeoutCooldownMs);
+    }
     if ((actions & PlayRequestCue) != 0) {
-        const ToneRequest request{880, 55, now_ms() + 150};
-        xQueueSend(g_notification_queue, &request, 0);
+        queue_audio_cue(880, 55, now_ms() + 150, true);
     }
     if ((actions & PlayTimeoutCue) != 0) {
-        const ToneRequest request{440, 180, now_ms() + 1000};
-        xQueueSend(g_notification_queue, &request, 0);
+        queue_audio_cue(440, 180, now_ms() + 1000, false);
     }
 }
 
@@ -274,6 +398,17 @@ protocol::DeviceState wire_state(TalkState state) {
     return static_cast<protocol::DeviceState>(static_cast<uint8_t>(state));
 }
 
+void sync_listen_bit(TalkState state, bool menu_active) {
+    const bool want_listen = vox_active(g_vox_level.load()) && !menu_active &&
+                             !g_hold_listen.load() &&
+                             (state == TalkState::Idle || state == TalkState::Requesting);
+    if (want_listen) {
+        xEventGroupSetBits(g_audio_events, kListenBit);
+    } else {
+        xEventGroupClearBits(g_audio_events, kListenBit);
+    }
+}
+
 }  // namespace
 
 extern "C" void app_main() {
@@ -282,6 +417,7 @@ extern "C" void app_main() {
     Settings settings = settings_store.load();
     g_logical_channel.store(settings.logical_channel);
     g_volume_percent.store(settings.volume_percent);
+    g_vox_level.store(settings.vox_level);
 
     if (!g_bsp.initialize()) {
         if (g_bsp_retry_magic != kBspRetryMagic) {
@@ -309,9 +445,11 @@ extern "C" void app_main() {
     g_audio_events = xEventGroupCreate();
     g_playback_queue = xQueueCreate(8, sizeof(audio::EncodedAudioFrame));
     g_notification_queue = xQueueCreate(2, sizeof(ToneRequest));
+    g_vox_queue = xQueueCreate(4, sizeof(VoxEvent));
     g_audio_owner = xSemaphoreCreateMutex();
     if (g_audio_events == nullptr || g_playback_queue == nullptr ||
-        g_notification_queue == nullptr || g_audio_owner == nullptr) {
+        g_notification_queue == nullptr || g_vox_queue == nullptr ||
+        g_audio_owner == nullptr) {
         ESP_LOGE(kTag, "Audio task resources unavailable");
         return;
     }
@@ -355,6 +493,7 @@ extern "C" void app_main() {
     uint32_t battery_sample_count = 1;
 #endif
     bool backlight_on = true;
+    bool ignore_menu_a_release = false;
     BatterySamplePolicy battery_policy;
     uint8_t cached_battery_percent = static_cast<uint8_t>(g_bsp.battery_percent());
     battery_policy.sampled(startup_ms);
@@ -378,10 +517,20 @@ extern "C" void app_main() {
             if (!was_off) {
                 if (navigation.active()) {
                     if (buttons.a_released) {
-                        if (navigation.short_a(now) == NavigationAction::SaveVolume) {
-                            settings.volume_percent = navigation.volume_percent();
-                            g_volume_percent.store(settings.volume_percent);
-                            settings_store.save(settings);
+                        if (ignore_menu_a_release) {
+                            ignore_menu_a_release = false;
+                        } else {
+                            const NavigationAction action = navigation.short_a(now);
+                            if (action == NavigationAction::SaveVolume) {
+                                settings.volume_percent = navigation.volume_percent();
+                                g_volume_percent.store(settings.volume_percent);
+                                settings_store.save(settings);
+                            } else if (action == NavigationAction::SaveVox) {
+                                settings.vox_level = navigation.vox_level();
+                                g_vox_level.store(settings.vox_level);
+                                g_vox_reset.store(true);
+                                settings_store.save(settings);
+                            }
                         }
                     }
                     if (buttons.b_held) {
@@ -391,12 +540,25 @@ extern "C" void app_main() {
                     }
                 } else {
                     if (buttons.a_pressed) {
+                        g_physical_ptt.store(true);
                         apply_actions(controller.ptt_pressed(now, esp_random(), esp_random()), controller);
                     }
-                    if (buttons.a_released) apply_actions(controller.ptt_released(now), controller);
-                    if (buttons.b_held && controller.snapshot().state == TalkState::Idle) {
-                        navigation.open(now, settings.volume_percent);
-                    } else if (buttons.b_clicked && controller.snapshot().state == TalkState::Idle) {
+                    if (buttons.a_released) {
+                        g_physical_ptt.store(false);
+                        g_vox_reset.store(true);
+                        apply_actions(controller.ptt_released(now), controller);
+                    }
+                    const ChannelButtonAction b_action = classify_channel_button(
+                        buttons.b_held, buttons.b_clicked,
+                        controller.snapshot().state == TalkState::Idle);
+                    if (b_action == ChannelButtonAction::OpenMenu) {
+                        ignore_menu_a_release = g_physical_ptt.load();
+                        g_physical_ptt.store(false);
+                        g_vox_reset.store(true);
+                        apply_actions(controller.ptt_released(now), controller);
+                        navigation.open(now, settings.volume_percent, settings.vox_level);
+                        next_ui_ms = now;
+                    } else if (b_action == ChannelButtonAction::CycleChannel) {
                         settings.logical_channel = static_cast<uint8_t>((settings.logical_channel % 4) + 1);
                         g_logical_channel.store(settings.logical_channel);
                         settings_store.save(settings);
@@ -404,10 +566,32 @@ extern "C" void app_main() {
                     }
                 }
             } else if (buttons.a_pressed) {
+                g_physical_ptt.store(true);
                 apply_actions(controller.ptt_pressed(now, esp_random(), esp_random()), controller);
             }
         }
         if (navigation.tick(now)) next_ui_ms = now;
+        if (!navigation.active()) ignore_menu_a_release = false;
+
+        VoxEvent vox_event{};
+        while (xQueueReceive(g_vox_queue, &vox_event, 0) == pdTRUE) {
+            if (vox_event == VoxEvent::Press) {
+                if (navigation.active() || controller.snapshot().state != TalkState::Idle ||
+                    vox_cooling_down(now, g_vox_cooldown_until.load())) {
+                    g_vox_reset.store(true);
+                    continue;
+                }
+                last_input_ms = now;
+                if (!backlight_on) {
+                    backlight_on = true;
+                    next_ui_ms = now;
+                }
+                apply_actions(controller.ptt_pressed(now, esp_random(), esp_random()), controller);
+            } else if (!g_physical_ptt.load()) {
+                g_vox_reset.store(true);
+                apply_actions(controller.ptt_released(now), controller);
+            }
+        }
 
         ReceivedFrame received{};
         while (g_transport.receive(received)) {
@@ -472,7 +656,11 @@ extern "C" void app_main() {
         }
 
         apply_actions(controller.tick(now), controller);
-        if (controller.snapshot().state != talk_state_at_loop_start) next_ui_ms = now;
+        if (controller.snapshot().state != talk_state_at_loop_start) {
+            next_ui_ms = now;
+            if (controller.snapshot().state == TalkState::Idle) g_vox_reset.store(true);
+        }
+        sync_listen_bit(controller.snapshot().state, navigation.active());
         if (talk_activity_keeps_screen_awake(controller.snapshot().state)) {
             last_input_ms = now;
             if (!backlight_on) {
@@ -541,6 +729,9 @@ extern "C" void app_main() {
             snapshot.menu_index = navigation.menu_index();
             snapshot.volume_index = navigation.volume_index();
             snapshot.volume_percent = settings.volume_percent;
+            snapshot.vox_index = navigation.vox_index();
+            snapshot.vox_level = settings.vox_level;
+            snapshot.vox_enabled = vox_active(settings.vox_level);
             snapshot.device_offset = static_cast<uint8_t>(navigation.device_offset());
             if (snapshot.talk_state == TalkState::Talking) {
                 const uint32_t elapsed_ms = now - controller.snapshot().talk_started_ms;

@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "common_audio/signal_processing/spl.c"
+        "common_audio/vad/vad_core.c"
+        "common_audio/vad/vad_filterbank.c"
+        "common_audio/vad/vad_gmm.c"
+        "common_audio/vad/vad_sp.c"
+        "common_audio/vad/webrtc_vad.c"
+    INCLUDE_DIRS
+        "."
+        "common_audio/vad/include")

@@ -7,6 +7,7 @@ namespace walkie {
 struct Settings {
     uint8_t logical_channel{1};
     uint8_t volume_percent{50};
+    uint8_t vox_level{0};  // 0=off, 1=low, 2=med, 3=high
 };
 
 class SettingsStore {

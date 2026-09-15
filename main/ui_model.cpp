@@ -32,7 +32,10 @@ bool ui_snapshots_equal(const UiSnapshot& lhs, const UiSnapshot& rhs) {
         lhs.weak_signal != rhs.weak_signal ||
         lhs.menu_index != rhs.menu_index ||
         lhs.volume_index != rhs.volume_index ||
-        lhs.volume_percent != rhs.volume_percent) {
+        lhs.volume_percent != rhs.volume_percent ||
+        lhs.vox_index != rhs.vox_index ||
+        lhs.vox_level != rhs.vox_level ||
+        lhs.vox_enabled != rhs.vox_enabled) {
         return false;
     }
 

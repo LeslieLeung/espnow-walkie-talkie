@@ -10,9 +10,10 @@ set(WALKIE_SRCS
     "settings.cpp"
     "talk_controller.cpp"
     "ui.cpp"
-    "ui_model.cpp")
+    "ui_model.cpp"
+    "vox.cpp")
 
-set(WALKIE_PRIV_REQUIRES esp_event esp_netif esp_wifi nvs_flash)
+set(WALKIE_PRIV_REQUIRES esp_event esp_netif esp_wifi nvs_flash webrtc_vad)
 if(IDF_TARGET STREQUAL "esp32c3")
     list(APPEND WALKIE_SRCS "board_bsp_passport.cpp")
     list(APPEND WALKIE_PRIV_REQUIRES bsp_passport)

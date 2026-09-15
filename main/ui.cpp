@@ -215,7 +215,11 @@ void render_main(const UiSnapshot& snapshot) {
         lv_label_set_text_fmt(g_header, "CH%u          %u%%",
                               snapshot.logical_channel, snapshot.battery_percent);
     }
-    lv_label_set_text_fmt(g_subheader, "%u ONLINE", snapshot.online_count);
+    const char* vox_badge = "";
+    if (snapshot.vox_level == 1) vox_badge = "  VOX L";
+    else if (snapshot.vox_level == 2) vox_badge = "  VOX M";
+    else if (snapshot.vox_level == 3) vox_badge = "  VOX H";
+    lv_label_set_text_fmt(g_subheader, "%u ONLINE%s", snapshot.online_count, vox_badge);
     lv_label_set_text(g_primary, snapshot.weak_signal ? "SIGNAL WEAK" : state_text(snapshot.talk_state));
     if (snapshot.talk_state == TalkState::Talking) {
         lv_label_set_text_fmt(g_body, "%u SEC LEFT", snapshot.remaining_seconds);
@@ -230,8 +234,10 @@ void render_main(const UiSnapshot& snapshot) {
     }
     lv_label_set_text(g_footer,
                       g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
-                          ? "HOLD OK TO TALK\nUP/DN: CHANNEL   HOLD: MENU"
-                          : "HOLD A TO TALK\nB: CHANNEL   HOLD B: MENU");
+                          ? (snapshot.vox_enabled ? "SPEAK OR HOLD OK\nUP/DN: CHANNEL   HOLD: MENU"
+                                                  : "HOLD OK TO TALK\nUP/DN: CHANNEL   HOLD: MENU")
+                          : (snapshot.vox_enabled ? "SPEAK OR HOLD A\nB: CHANNEL   HOLD B: MENU"
+                                                  : "HOLD A TO TALK\nB: CHANNEL   HOLD B: MENU"));
 }
 
 void render_menu(const UiSnapshot& snapshot) {
@@ -241,7 +247,9 @@ void render_menu(const UiSnapshot& snapshot) {
     const char* marker0 = snapshot.menu_index == 0 ? ">" : " ";
     const char* marker1 = snapshot.menu_index == 1 ? ">" : " ";
     const char* marker2 = snapshot.menu_index == 2 ? ">" : " ";
-    lv_label_set_text_fmt(g_body, "%s DEVICES\n\n%s SETTINGS\n\n%s EXIT", marker0, marker1, marker2);
+    const char* marker3 = snapshot.menu_index == 3 ? ">" : " ";
+    lv_label_set_text_fmt(g_body, "%s DEVICES\n%s SETTINGS\n%s VOX\n%s EXIT",
+                          marker0, marker1, marker2, marker3);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.menu_x, g_layout.menu_y);
     lv_label_set_text(g_footer,
@@ -299,6 +307,24 @@ void render_volume(const UiSnapshot& snapshot) {
                           : "B: NEXT   A: SAVE\nHOLD B: BACK");
 }
 
+void render_vox(const UiSnapshot& snapshot) {
+    lv_label_set_text(g_header, "VOX");
+    lv_obj_add_flag(g_subheader, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g_primary, LV_OBJ_FLAG_HIDDEN);
+    constexpr const char* names[] = {"OFF", "LOW", "MED", "HIGH"};
+    lv_label_set_text_fmt(g_body, "%s %s\n\n%s %s\n\n%s %s\n\n%s %s",
+                          snapshot.vox_index == 0 ? ">" : " ", names[0],
+                          snapshot.vox_index == 1 ? ">" : " ", names[1],
+                          snapshot.vox_index == 2 ? ">" : " ", names[2],
+                          snapshot.vox_index == 3 ? ">" : " ", names[3]);
+    lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.volume_x, g_layout.volume_y);
+    lv_label_set_text(g_footer,
+                      g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
+                          ? "UP/DN: NEXT   OK: SAVE\nHOLD: BACK"
+                          : "B: NEXT   A: SAVE\nHOLD B: BACK");
+}
+
 void render(const UiSnapshot& snapshot) {
     lv_obj_set_style_bg_color(g_screen, lv_color_hex(screen_background_rgb(snapshot.talk_state)), 0);
     reset_layout();
@@ -307,6 +333,7 @@ void render(const UiSnapshot& snapshot) {
         case UiPage::Menu: render_menu(snapshot); break;
         case UiPage::Devices: render_devices(snapshot); break;
         case UiPage::Volume: render_volume(snapshot); break;
+        case UiPage::Vox: render_vox(snapshot); break;
     }
 }
 
