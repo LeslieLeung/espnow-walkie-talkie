@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "esp32s3",
+      "displayName": "ESP32-S3 (StopWatch / StickS3)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32s3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s3",
+        "SDKCONFIG": "${sourceDir}/build/esp32s3/sdkconfig"
+      }
+    },
+    {
+      "name": "esp32c3",
+      "displayName": "ESP32-C3 (AI Passport)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32c3",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32c3",
+        "SDKCONFIG": "${sourceDir}/build/esp32c3/sdkconfig"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "esp32s3",
+      "configurePreset": "esp32s3"
+    },
+    {
+      "name": "esp32c3",
+      "configurePreset": "esp32c3"
+    }
+  ]
+}

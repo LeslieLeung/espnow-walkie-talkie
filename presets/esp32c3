@@ -1,0 +1,1 @@
+-B build/esp32c3 -DIDF_TARGET=esp32c3

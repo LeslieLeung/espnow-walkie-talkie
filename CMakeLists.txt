@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
+# Isolate each chip's sdkconfig inside its build dir (see CMakePresets.json).
+set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
 set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

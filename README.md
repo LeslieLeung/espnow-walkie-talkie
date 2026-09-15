@@ -85,17 +85,19 @@ VOX 打开时主界面显示 `VOX L` / `VOX M` / `VOX H`。HIGH 开口约 60 ms�
 
 用 [eim](https://docs.espressif.com/projects/idf-im-cli/en/latest/) 管理 ESP-IDF。所有目标统一 **v5.5.3**（`idf: ">=5.5,<5.6"`）。也可以 `eim shell v5.5.3` 后直接跑 `idf.py`。
 
-同一份源码切换芯片目标会重建 `sdkconfig` 和 `dependencies.lock.<target>`。
+S3 和 C3 使用独立 CMake preset（`build/esp32s3`、`build/esp32c3` 及各自的 `sdkconfig`），切换芯片是增量编译，不会 `fullclean`。IDF 5.5.3 的 `idf.py` 还没有 `--preset`，用参数文件 `@presets/<target>`，目录和 `CMakePresets.json` 对齐。
 
 ```sh
 # M5Stack StopWatch / StickS3
-eim run "idf.py set-target esp32s3 && idf.py build" v5.5.3
-eim run "idf.py -p <PORT> flash monitor" v5.5.3
+eim run 'idf.py "@presets/esp32s3" build' v5.5.3
+eim run 'idf.py "@presets/esp32s3" -p <PORT> flash monitor' v5.5.3
 
 # FoloToy AI Passport
-eim run "idf.py set-target esp32c3 && idf.py build" v5.5.3
-eim run "idf.py -p <PORT> flash monitor" v5.5.3
+eim run 'idf.py "@presets/esp32c3" build' v5.5.3
+eim run 'idf.py "@presets/esp32c3" -p <PORT> flash monitor' v5.5.3
 ```
+
+`menuconfig` 同样要带 preset，例如 `idf.py "@presets/esp32s3" menuconfig`。不要用 `idf.py set-target` 切换。若本地还有旧的默认 `build/`（产物直接在 `build/` 根下），删掉后再用 preset，以免和 `build/esp32s3` 混在同一棵目录里。
 
 StopWatch 进入下载模式：USB Type-C 接上电脑后，**长按电源键约 2 秒**直到绿色 LED 亮起再松开，然后 flash。
 

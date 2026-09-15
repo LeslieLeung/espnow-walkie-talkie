@@ -4,5 +4,6 @@
 /managed_components/
 /sdkconfig
 /sdkconfig.old
+CMakeUserPresets.json
 
 .scratch
