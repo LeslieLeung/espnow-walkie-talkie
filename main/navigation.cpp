@@ -73,6 +73,24 @@ void NavigationController::long_b(uint32_t now_ms) {
     }
 }
 
+NavigationAction NavigationController::activate_index(uint32_t now_ms, uint8_t index) {
+    if (!active()) return NavigationAction::None;
+    touch(now_ms);
+    if (page_ == UiPage::Menu) {
+        menu_index_ = static_cast<uint8_t>(index % 4);
+        return short_a(now_ms);
+    }
+    if (page_ == UiPage::Volume) {
+        volume_index_ = index > 3 ? 3 : index;
+        return NavigationAction::SaveVolume;
+    }
+    if (page_ == UiPage::Vox) {
+        vox_index_ = index >= kVoxLevelCount ? 0 : index;
+        return NavigationAction::SaveVox;
+    }
+    return NavigationAction::None;
+}
+
 bool NavigationController::tick(uint32_t now_ms) {
     if (active() && static_cast<uint32_t>(now_ms - last_input_ms_) >= kTimeoutMs) {
         close();

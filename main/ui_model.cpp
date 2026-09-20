@@ -35,7 +35,9 @@ bool ui_snapshots_equal(const UiSnapshot& lhs, const UiSnapshot& rhs) {
         lhs.volume_percent != rhs.volume_percent ||
         lhs.vox_index != rhs.vox_index ||
         lhs.vox_level != rhs.vox_level ||
-        lhs.vox_enabled != rhs.vox_enabled) {
+        lhs.vox_enabled != rhs.vox_enabled ||
+        lhs.uses_soft_keys != rhs.uses_soft_keys ||
+        lhs.talk_held != rhs.talk_held) {
         return false;
     }
 

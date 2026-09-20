@@ -7,6 +7,7 @@
 #include "walkie/presence.hpp"
 #include "walkie/protocol.hpp"
 #include "walkie/settings.hpp"
+#include "walkie/soft_keys.hpp"
 #include "walkie/talk_controller.hpp"
 #include "walkie/ui.hpp"
 #include "walkie/vox.hpp"
@@ -53,6 +54,7 @@ RTC_NOINIT_ATTR uint32_t g_bsp_retry_count;
 
 BoardBsp g_bsp;
 EspNowTransport g_transport;
+SoftKeyRouter g_soft_keys;
 EventGroupHandle_t g_audio_events = nullptr;
 QueueHandle_t g_playback_queue = nullptr;
 QueueHandle_t g_notification_queue = nullptr;
@@ -66,6 +68,8 @@ std::atomic<uint8_t> g_volume_percent{50};
 std::atomic<uint32_t> g_tx_session{0};
 std::atomic<uint16_t> g_tx_sequence{0};
 std::atomic<bool> g_physical_ptt{false};
+std::atomic<bool> g_soft_ptt{false};
+std::atomic<bool> g_manual_ptt{false};
 std::atomic<uint8_t> g_vox_level{0};
 std::atomic<bool> g_vox_reset{false};
 std::atomic<bool> g_hold_listen{false};
@@ -249,7 +253,7 @@ void capture_task(void*) {
                     } else {
                         encode_and_send(samples, encoder_state);
                     }
-                    if (vox_on && !g_physical_ptt.load() &&
+                    if (vox_on && !g_manual_ptt.load() &&
                         gate.observe(speech, true) == audio::VoxDecision::Release) {
                         const VoxEvent event = VoxEvent::Release;
                         xQueueSend(g_vox_queue, &event, 0);
@@ -437,6 +441,10 @@ extern "C" void app_main() {
     }
     g_bsp_retry_magic = kBspRetryMagic;
     g_bsp_retry_count = 0;
+    if (g_bsp.uses_soft_keys()) {
+        g_soft_keys.set_layout(make_soft_key_layout(g_bsp.display_width(), g_bsp.display_height(),
+                                                    g_bsp.round_display(), g_bsp.content_inset()));
+    }
     if (g_transport.initialize(kRadioChannel) != ESP_OK) {
         ESP_LOGE(kTag, "ESP-NOW initialization failed");
         return;
@@ -499,6 +507,29 @@ extern "C" void app_main() {
     battery_policy.sampled(startup_ms);
     UiSnapshot last_published_snapshot{};
     bool has_published_snapshot = false;
+    bool was_manual_ptt = false;
+
+    auto apply_nav_save = [&](NavigationAction action) {
+        if (action == NavigationAction::SaveVolume) {
+            settings.volume_percent = navigation.volume_percent();
+            g_volume_percent.store(settings.volume_percent);
+            settings_store.save(settings);
+        } else if (action == NavigationAction::SaveVox) {
+            settings.vox_level = navigation.vox_level();
+            g_vox_level.store(settings.vox_level);
+            g_vox_reset.store(true);
+            settings_store.save(settings);
+        }
+    };
+
+    auto release_manual_ptt = [&](uint32_t now) {
+        g_physical_ptt.store(false);
+        g_soft_ptt.store(false);
+        g_manual_ptt.store(false);
+        was_manual_ptt = false;
+        g_vox_reset.store(true);
+        apply_actions(controller.ptt_released(now), controller);
+    };
 
     ESP_LOGI(kTag, "Ready as %s on logical CH%u / radio CH%u",
              local_name.data(), settings.logical_channel, kRadioChannel);
@@ -507,69 +538,87 @@ extern "C" void app_main() {
         const uint32_t now = now_ms();
         const TalkState talk_state_at_loop_start = controller.snapshot().state;
         const ButtonEvents buttons = g_bsp.poll_buttons();
-        if (buttons.a_pressed || buttons.a_released || buttons.b_clicked || buttons.b_held) {
-            const bool was_off = !backlight_on;
-            last_input_ms = now;
-            if (was_off) {
-                backlight_on = true;
-                next_ui_ms = now;
-            }
-            if (!was_off) {
-                if (navigation.active()) {
-                    if (buttons.a_released) {
-                        if (ignore_menu_a_release) {
-                            ignore_menu_a_release = false;
-                        } else {
-                            const NavigationAction action = navigation.short_a(now);
-                            if (action == NavigationAction::SaveVolume) {
-                                settings.volume_percent = navigation.volume_percent();
-                                g_volume_percent.store(settings.volume_percent);
-                                settings_store.save(settings);
-                            } else if (action == NavigationAction::SaveVox) {
-                                settings.vox_level = navigation.vox_level();
-                                g_vox_level.store(settings.vox_level);
-                                g_vox_reset.store(true);
-                                settings_store.save(settings);
-                            }
-                        }
-                    }
-                    if (buttons.b_held) {
-                        navigation.long_b(now);
-                    } else if (buttons.b_clicked) {
-                        navigation.short_b(now, presence.count());
-                    }
-                } else {
-                    if (buttons.a_pressed) {
-                        g_physical_ptt.store(true);
-                        apply_actions(controller.ptt_pressed(now, esp_random(), esp_random()), controller);
-                    }
-                    if (buttons.a_released) {
-                        g_physical_ptt.store(false);
-                        g_vox_reset.store(true);
-                        apply_actions(controller.ptt_released(now), controller);
-                    }
-                    const ChannelButtonAction b_action = classify_channel_button(
-                        buttons.b_held, buttons.b_clicked,
-                        controller.snapshot().state == TalkState::Idle);
-                    if (b_action == ChannelButtonAction::OpenMenu) {
-                        ignore_menu_a_release = g_physical_ptt.load();
-                        g_physical_ptt.store(false);
-                        g_vox_reset.store(true);
-                        apply_actions(controller.ptt_released(now), controller);
-                        navigation.open(now, settings.volume_percent, settings.vox_level);
-                        next_ui_ms = now;
-                    } else if (b_action == ChannelButtonAction::CycleChannel) {
-                        settings.logical_channel = static_cast<uint8_t>((settings.logical_channel % 4) + 1);
-                        g_logical_channel.store(settings.logical_channel);
-                        settings_store.save(settings);
-                        presence = {};
-                    }
-                }
-            } else if (buttons.a_pressed) {
-                g_physical_ptt.store(true);
+        const PointerSample pointer = g_bsp.poll_pointer();
+        const bool radio_idle = controller.snapshot().state == TalkState::Idle;
+        const SoftKeyEvents soft =
+            g_soft_keys.feed(pointer, navigation.page(), backlight_on, radio_idle);
+        const bool any_input = buttons.a_pressed || buttons.a_released || buttons.b_clicked ||
+                               buttons.b_held || pointer.pressed || soft.any();
+        if (any_input || g_manual_ptt.load()) last_input_ms = now;
+        const bool was_off = !backlight_on;
+        if (any_input && was_off) {
+            backlight_on = true;
+            next_ui_ms = now;
+        }
+
+        if (!navigation.active()) {
+            if (buttons.a_pressed) g_physical_ptt.store(true);
+            if (buttons.a_released) g_physical_ptt.store(false);
+            if (soft.talk_pressed) g_soft_ptt.store(true);
+            if (soft.talk_released) g_soft_ptt.store(false);
+        }
+        const bool want_manual = g_physical_ptt.load() || g_soft_ptt.load();
+        g_manual_ptt.store(want_manual);
+        if (!navigation.active()) {
+            if (want_manual && !was_manual_ptt) {
                 apply_actions(controller.ptt_pressed(now, esp_random(), esp_random()), controller);
             }
+            if (!want_manual && was_manual_ptt) {
+                g_vox_reset.store(true);
+                apply_actions(controller.ptt_released(now), controller);
+            }
+            was_manual_ptt = want_manual;
         }
+
+        if (!was_off) {
+            if (navigation.active()) {
+                if (buttons.a_released) {
+                    if (ignore_menu_a_release) {
+                        ignore_menu_a_release = false;
+                    } else {
+                        apply_nav_save(navigation.short_a(now));
+                    }
+                }
+                if (buttons.b_held) {
+                    navigation.long_b(now);
+                } else if (buttons.b_clicked) {
+                    navigation.short_b(now, presence.count());
+                }
+            } else {
+                const ChannelButtonAction b_action = classify_channel_button(
+                    buttons.b_held, buttons.b_clicked, radio_idle);
+                if (b_action == ChannelButtonAction::OpenMenu) {
+                    ignore_menu_a_release = g_physical_ptt.load() || g_soft_ptt.load();
+                    release_manual_ptt(now);
+                    navigation.open(now, settings.volume_percent, settings.vox_level);
+                    next_ui_ms = now;
+                } else if (b_action == ChannelButtonAction::CycleChannel) {
+                    settings.logical_channel = static_cast<uint8_t>((settings.logical_channel % 4) + 1);
+                    g_logical_channel.store(settings.logical_channel);
+                    settings_store.save(settings);
+                    presence = {};
+                }
+            }
+        }
+
+        if (soft.menu_clicked) {
+            ignore_menu_a_release = g_physical_ptt.load() || g_soft_ptt.load();
+            release_manual_ptt(now);
+            navigation.open(now, settings.volume_percent, settings.vox_level);
+            next_ui_ms = now;
+        } else if (soft.channel_clicked) {
+            settings.logical_channel = static_cast<uint8_t>((settings.logical_channel % 4) + 1);
+            g_logical_channel.store(settings.logical_channel);
+            settings_store.save(settings);
+            presence = {};
+        } else if (soft.back_clicked) {
+            navigation.long_b(now);
+        } else if (soft.list_clicked) {
+            navigation.short_b(now, presence.count());
+        } else if (soft.item_clicked >= 0) {
+            apply_nav_save(navigation.activate_index(now, static_cast<uint8_t>(soft.item_clicked)));
+        }
+
         if (navigation.tick(now)) next_ui_ms = now;
         if (!navigation.active()) ignore_menu_a_release = false;
 
@@ -587,7 +636,7 @@ extern "C" void app_main() {
                     next_ui_ms = now;
                 }
                 apply_actions(controller.ptt_pressed(now, esp_random(), esp_random()), controller);
-            } else if (!g_physical_ptt.load()) {
+            } else if (!g_manual_ptt.load()) {
                 g_vox_reset.store(true);
                 apply_actions(controller.ptt_released(now), controller);
             }
@@ -733,6 +782,8 @@ extern "C" void app_main() {
             snapshot.vox_level = settings.vox_level;
             snapshot.vox_enabled = vox_active(settings.vox_level);
             snapshot.device_offset = static_cast<uint8_t>(navigation.device_offset());
+            snapshot.uses_soft_keys = g_bsp.uses_soft_keys();
+            snapshot.talk_held = g_manual_ptt.load();
             if (snapshot.talk_state == TalkState::Talking) {
                 const uint32_t elapsed_ms = now - controller.snapshot().talk_started_ms;
                 snapshot.remaining_seconds = static_cast<uint8_t>(30 - std::min<uint32_t>(30, elapsed_ms / 1000));

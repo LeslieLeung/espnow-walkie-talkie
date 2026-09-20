@@ -20,6 +20,16 @@
         "IDF_TARGET": "esp32c3",
         "SDKCONFIG": "${sourceDir}/build/esp32c3/sdkconfig"
       }
+    },
+    {
+      "name": "esp32s31",
+      "displayName": "ESP32-S31 (ESP-Mosaico)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32s31",
+      "cacheVariables": {
+        "IDF_TARGET": "esp32s31",
+        "SDKCONFIG": "${sourceDir}/build/esp32s31/sdkconfig"
+      }
     }
   ],
   "buildPresets": [
@@ -30,6 +40,10 @@
     {
       "name": "esp32c3",
       "configurePreset": "esp32c3"
+    },
+    {
+      "name": "esp32s31",
+      "configurePreset": "esp32s31"
     }
   ]
 }

@@ -36,6 +36,8 @@ struct UiSnapshot {
     uint8_t peer_count{0};
     uint8_t device_offset{0};
     std::array<UiPeer, PresenceManager::kMaxPeers> peers{};
+    bool uses_soft_keys{false};
+    bool talk_held{false};
 };
 
 bool ui_snapshots_equal(const UiSnapshot& lhs, const UiSnapshot& rhs);

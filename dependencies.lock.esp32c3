@@ -24,6 +24,6 @@ direct_dependencies:
 - espressif/esp_codec_dev
 - idf
 - lvgl/lvgl
-manifest_hash: 35172f9ea16c9c8c90570692a33d25af579810364f2d94a03a2782ee8318cde6
+manifest_hash: 73763e40d24d0f2043829380c3801897bad7fecde718941f4c4a264dcaf1a573
 target: esp32c3
 version: 2.0.0

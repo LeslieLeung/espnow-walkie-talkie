@@ -12,7 +12,7 @@ set(WEBRTC_VAD_SRCS
     ${WEBRTC_VAD_DIR}/common_audio/vad/vad_sp.c
     ${WEBRTC_VAD_DIR}/common_audio/vad/webrtc_vad.c)
 
-add_executable(walkie_host_tests
+    add_executable(walkie_host_tests
     host_tests.cpp
     ../main/adpcm.cpp
     ../main/audio_jitter.cpp
@@ -20,6 +20,7 @@ add_executable(walkie_host_tests
     ../main/navigation.cpp
     ../main/presence.cpp
     ../main/protocol.cpp
+    ../main/soft_keys.cpp
     ../main/talk_controller.cpp
     ../main/ui_model.cpp
     ../main/vox.cpp
@@ -33,7 +34,8 @@ target_compile_options(walkie_host_tests PRIVATE -Wall -Wextra -Werror)
 set_source_files_properties(${WEBRTC_VAD_SRCS} PROPERTIES COMPILE_OPTIONS "-Wno-error")
 set_source_files_properties(host_tests.cpp ../main/adpcm.cpp ../main/audio_jitter.cpp
     ../main/display_policy.cpp ../main/navigation.cpp ../main/presence.cpp
-    ../main/protocol.cpp ../main/talk_controller.cpp ../main/ui_model.cpp ../main/vox.cpp
+    ../main/protocol.cpp ../main/soft_keys.cpp ../main/talk_controller.cpp
+    ../main/ui_model.cpp ../main/vox.cpp
     PROPERTIES COMPILE_OPTIONS "-pedantic")
 
 add_test(NAME walkie_host_tests COMMAND walkie_host_tests)

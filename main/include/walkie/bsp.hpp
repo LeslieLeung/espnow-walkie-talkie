@@ -15,19 +15,36 @@ struct ButtonEvents {
     bool b_held{false};
 };
 
+struct PointerSample {
+    bool valid{false};
+    bool pressed{false};
+    int16_t x{0};
+    int16_t y{0};
+};
+
 // Board-facing HAL used by the app and UI. StickS3/StopWatch are served by
 // board_bsp_m5.cpp (M5Unified auto-detect, ESP32-S3 builds); AI Passport is
 // served by board_bsp_passport.cpp (vendored ai-passport BSP, ESP32-C3
-// builds). Application code should not branch on board enums.
+// builds); ESP-Mosaico is served by board_bsp_mosaico.cpp (ESP32-S31).
+// Application code should not branch on board enums.
 class BoardBsp {
 public:
     bool initialize();
     protocol::BoardType board_type() const { return board_; }
     const char* name_prefix() const;
     bool round_display() const { return round_display_; }
-    int content_inset() const { return round_display_ ? 56 : 6; }
+    bool has_touch() const { return has_touch_; }
+    bool uses_soft_keys() const { return has_touch_; }
+    // QSPI panels (CO5300) need 4-pixel X alignment; other boards leave this at 1.
+    int flush_align() const { return flush_align_; }
+    int content_inset() const {
+        if (!round_display_) return 6;
+        const int width = display_width();
+        return width > 0 ? (width * 56 + 233) / 466 : 56;
+    }
 
     ButtonEvents poll_buttons();
+    PointerSample poll_pointer();
     int battery_percent() const;
     bool display_sleep();
     bool display_wakeup();
@@ -50,7 +67,9 @@ public:
 private:
     protocol::BoardType board_{protocol::BoardType::Unknown};
     bool round_display_{false};
+    bool has_touch_{false};
     bool ok_and_direction_keys_{false};
+    int flush_align_{1};
     std::atomic<bool> display_awake_{true};
 };
 

@@ -1,6 +1,7 @@
 #include "walkie/ui.hpp"
 
 #include "walkie/display_policy.hpp"
+#include "walkie/soft_keys.hpp"
 
 #include <cstddef>
 #include <cstdio>
@@ -32,6 +33,7 @@ uint32_t g_flush_count = 0;
 uint32_t g_blocked_flush_count = 0;
 #endif
 BoardBsp* g_bsp = nullptr;
+int g_flush_align = 1;
 lv_disp_draw_buf_t g_draw_buffer{};
 lv_disp_drv_t g_display_driver{};
 lv_color_t* g_pixels = nullptr;
@@ -42,6 +44,18 @@ lv_obj_t* g_subheader = nullptr;
 lv_obj_t* g_primary = nullptr;
 lv_obj_t* g_body = nullptr;
 lv_obj_t* g_footer = nullptr;
+SoftKeyLayout g_soft_layout{};
+bool g_soft_enabled = false;
+lv_obj_t* g_btn_talk = nullptr;
+lv_obj_t* g_lbl_talk = nullptr;
+lv_obj_t* g_btn_channel = nullptr;
+lv_obj_t* g_lbl_channel = nullptr;
+lv_obj_t* g_btn_menu = nullptr;
+lv_obj_t* g_lbl_menu = nullptr;
+lv_obj_t* g_btn_back = nullptr;
+lv_obj_t* g_lbl_back = nullptr;
+lv_obj_t* g_btn_item[4]{};
+lv_obj_t* g_lbl_item[4]{};
 
 struct Layout {
     int inset{6};
@@ -151,9 +165,58 @@ void flush(lv_disp_drv_t* driver, const lv_area_t* area, lv_color_t* colors) {
     lv_disp_flush_ready(driver);
 }
 
+void rounder(lv_disp_drv_t*, lv_area_t* area) {
+    const int align = g_flush_align > 1 ? g_flush_align : 2;
+    const int max_x = g_bsp != nullptr ? g_bsp->display_width() - 1 : area->x2;
+    int x1 = area->x1;
+    int x2 = area->x2;
+    if (x1 < 0) x1 = 0;
+    if (x2 < 0) x2 = 0;
+    if (x1 > max_x) x1 = max_x;
+    if (x2 > max_x) x2 = max_x;
+    area->x1 = static_cast<lv_coord_t>((x1 / align) * align);
+    x2 = ((x2 + align) / align) * align - 1;
+    area->x2 = static_cast<lv_coord_t>(x2 > max_x ? max_x : x2);
+}
+
 void style_label(lv_obj_t* label, const lv_color_t color) {
     lv_obj_set_style_text_color(label, color, 0);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+}
+
+void place_rect(lv_obj_t* obj, const Rect& rect) {
+    lv_obj_set_pos(obj, rect.x, rect.y);
+    lv_obj_set_size(obj, rect.w, rect.h);
+}
+
+lv_obj_t* make_soft_button(lv_obj_t* parent, const Rect& rect, lv_obj_t** label_out,
+                           const lv_font_t* font) {
+    lv_obj_t* button = lv_btn_create(parent);
+    place_rect(button, rect);
+    lv_obj_clear_flag(button, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(button, lv_color_hex(0x1A3A44), 0);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(button, 16, 0);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_set_style_pad_all(button, 0, 0);
+    lv_obj_t* label = lv_label_create(button);
+    lv_obj_center(label);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xE7F4F5), 0);
+    lv_obj_set_style_text_font(label, font, 0);
+    if (label_out != nullptr) *label_out = label;
+    lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
+    return button;
+}
+
+void set_button_hidden(lv_obj_t* button, bool hidden) {
+    if (button == nullptr) return;
+    if (hidden) lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(button, LV_OBJ_FLAG_HIDDEN);
+}
+
+void set_button_lit(lv_obj_t* button, bool lit) {
+    if (button == nullptr) return;
+    lv_obj_set_style_bg_color(button, lv_color_hex(lit ? 0x8F1D1D : 0x1A3A44), 0);
 }
 
 void create_screen(int width, int height) {
@@ -193,6 +256,22 @@ void create_screen(int width, int height) {
     lv_obj_set_style_text_font(g_footer, g_layout.footer_font, 0);
     style_label(g_footer, lv_color_hex(0x789096));
 
+    if (g_soft_enabled) {
+        g_btn_talk = make_soft_button(g_screen, g_soft_layout.talk, &g_lbl_talk, g_layout.body_font);
+        lv_label_set_text(g_lbl_talk, "TALK");
+        g_btn_channel =
+            make_soft_button(g_screen, g_soft_layout.channel, &g_lbl_channel, g_layout.footer_font);
+        lv_label_set_text(g_lbl_channel, "CH");
+        g_btn_menu = make_soft_button(g_screen, g_soft_layout.menu, &g_lbl_menu, g_layout.footer_font);
+        lv_label_set_text(g_lbl_menu, "MENU");
+        g_btn_back = make_soft_button(g_screen, g_soft_layout.back, &g_lbl_back, g_layout.body_font);
+        lv_label_set_text(g_lbl_back, "BACK");
+        for (int i = 0; i < 4; ++i) {
+            g_btn_item[i] =
+                make_soft_button(g_screen, g_soft_layout.items[i], &g_lbl_item[i], g_layout.body_font);
+        }
+    }
+
     (void)width;
 }
 
@@ -205,6 +284,43 @@ void reset_layout() {
     lv_obj_set_style_text_font(g_body, g_layout.body_font, 0);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(g_body, LV_ALIGN_CENTER, 0, g_layout.body_offset_y);
+}
+
+void show_soft_main(bool talking) {
+    set_button_hidden(g_btn_talk, false);
+    set_button_hidden(g_btn_channel, false);
+    set_button_hidden(g_btn_menu, false);
+    set_button_hidden(g_btn_back, true);
+    for (auto* button : g_btn_item) set_button_hidden(button, true);
+    set_button_lit(g_btn_talk, talking);
+}
+
+void show_soft_items(const char* const* names, uint8_t selected) {
+    set_button_hidden(g_btn_talk, true);
+    set_button_hidden(g_btn_channel, true);
+    set_button_hidden(g_btn_menu, true);
+    set_button_hidden(g_btn_back, false);
+    for (int i = 0; i < 4; ++i) {
+        set_button_hidden(g_btn_item[i], false);
+        if (g_lbl_item[i] != nullptr) lv_label_set_text(g_lbl_item[i], names[i]);
+        set_button_lit(g_btn_item[i], i == selected);
+    }
+}
+
+void show_soft_back_only() {
+    set_button_hidden(g_btn_talk, true);
+    set_button_hidden(g_btn_channel, true);
+    set_button_hidden(g_btn_menu, true);
+    set_button_hidden(g_btn_back, false);
+    for (auto* button : g_btn_item) set_button_hidden(button, true);
+}
+
+void hide_soft_keys() {
+    set_button_hidden(g_btn_talk, true);
+    set_button_hidden(g_btn_channel, true);
+    set_button_hidden(g_btn_menu, true);
+    set_button_hidden(g_btn_back, true);
+    for (auto* button : g_btn_item) set_button_hidden(button, true);
 }
 
 void render_main(const UiSnapshot& snapshot) {
@@ -232,6 +348,12 @@ void render_main(const UiSnapshot& snapshot) {
     } else {
         lv_label_set_text(g_body, "READY");
     }
+    if (snapshot.uses_soft_keys) {
+        lv_obj_add_flag(g_footer, LV_OBJ_FLAG_HIDDEN);
+        show_soft_main(snapshot.talk_held || snapshot.talk_state == TalkState::Talking ||
+                       snapshot.talk_state == TalkState::Requesting);
+        return;
+    }
     lv_label_set_text(g_footer,
                       g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
                           ? (snapshot.vox_enabled ? "SPEAK OR HOLD OK\nUP/DN: CHANNEL   HOLD: MENU"
@@ -244,6 +366,13 @@ void render_menu(const UiSnapshot& snapshot) {
     lv_label_set_text(g_header, "MENU");
     lv_obj_add_flag(g_subheader, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g_primary, LV_OBJ_FLAG_HIDDEN);
+    if (snapshot.uses_soft_keys) {
+        lv_obj_add_flag(g_body, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(g_footer, LV_OBJ_FLAG_HIDDEN);
+        constexpr const char* names[] = {"DEVICES", "SETTINGS", "VOX", "EXIT"};
+        show_soft_items(names, snapshot.menu_index);
+        return;
+    }
     const char* marker0 = snapshot.menu_index == 0 ? ">" : " ";
     const char* marker1 = snapshot.menu_index == 1 ? ">" : " ";
     const char* marker2 = snapshot.menu_index == 2 ? ">" : " ";
@@ -283,6 +412,11 @@ void render_devices(const UiSnapshot& snapshot) {
     lv_obj_set_style_text_font(g_body, g_layout.list_font, 0);
     lv_obj_set_style_text_align(g_body, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_align(g_body, LV_ALIGN_TOP_LEFT, g_layout.devices_x, g_layout.devices_y);
+    if (snapshot.uses_soft_keys) {
+        lv_obj_add_flag(g_footer, LV_OBJ_FLAG_HIDDEN);
+        show_soft_back_only();
+        return;
+    }
     lv_label_set_text(g_footer,
                       g_bsp != nullptr && g_bsp->uses_ok_and_direction_keys()
                           ? "UP/DN: SCROLL   HOLD: BACK"
@@ -294,6 +428,12 @@ void render_volume(const UiSnapshot& snapshot) {
     lv_obj_add_flag(g_subheader, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g_primary, LV_OBJ_FLAG_HIDDEN);
     constexpr const char* names[] = {"MUTE", "25%", "50%", "75%"};
+    if (snapshot.uses_soft_keys) {
+        lv_obj_add_flag(g_body, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(g_footer, LV_OBJ_FLAG_HIDDEN);
+        show_soft_items(names, snapshot.volume_index);
+        return;
+    }
     lv_label_set_text_fmt(g_body, "%s %s\n\n%s %s\n\n%s %s\n\n%s %s",
                           snapshot.volume_index == 0 ? ">" : " ", names[0],
                           snapshot.volume_index == 1 ? ">" : " ", names[1],
@@ -312,6 +452,12 @@ void render_vox(const UiSnapshot& snapshot) {
     lv_obj_add_flag(g_subheader, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g_primary, LV_OBJ_FLAG_HIDDEN);
     constexpr const char* names[] = {"OFF", "LOW", "MED", "HIGH"};
+    if (snapshot.uses_soft_keys) {
+        lv_obj_add_flag(g_body, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(g_footer, LV_OBJ_FLAG_HIDDEN);
+        show_soft_items(names, snapshot.vox_index);
+        return;
+    }
     lv_label_set_text_fmt(g_body, "%s %s\n\n%s %s\n\n%s %s\n\n%s %s",
                           snapshot.vox_index == 0 ? ">" : " ", names[0],
                           snapshot.vox_index == 1 ? ">" : " ", names[1],
@@ -328,6 +474,7 @@ void render_vox(const UiSnapshot& snapshot) {
 void render(const UiSnapshot& snapshot) {
     lv_obj_set_style_bg_color(g_screen, lv_color_hex(screen_background_rgb(snapshot.talk_state)), 0);
     reset_layout();
+    if (!snapshot.uses_soft_keys) hide_soft_keys();
     switch (snapshot.page) {
         case UiPage::Main: render_main(snapshot); break;
         case UiPage::Menu: render_menu(snapshot); break;
@@ -358,7 +505,7 @@ bool Ui::start() {
         model_mutex_ = nullptr;
         return false;
     }
-    if (xTaskCreatePinnedToCore(task_entry, "walkie_ui", 6144, this, 2, &task_handle_,
+    if (xTaskCreatePinnedToCore(task_entry, "walkie_ui", 8192, this, 2, &task_handle_,
                                 kUiCore) != pdPASS) {
         heap_caps_free(g_pixels);
         g_pixels = nullptr;
@@ -386,6 +533,11 @@ void Ui::task_entry(void* context) {
 void Ui::run() {
     g_bsp = &bsp_;
     g_layout = make_layout(bsp_);
+    g_soft_enabled = bsp_.uses_soft_keys();
+    g_soft_layout = g_soft_enabled
+                        ? make_soft_key_layout(bsp_.display_width(), bsp_.display_height(),
+                                               bsp_.round_display(), bsp_.content_inset())
+                        : SoftKeyLayout{};
     lv_init();
     const int width = bsp_.display_width();
     const int height = bsp_.display_height();
@@ -401,6 +553,8 @@ void Ui::run() {
     g_display_driver.ver_res = height;
     g_display_driver.flush_cb = flush;
     g_display_driver.draw_buf = &g_draw_buffer;
+    g_flush_align = bsp_.flush_align();
+    if (g_flush_align > 1) g_display_driver.rounder_cb = rounder;
     lv_disp_t* display = lv_disp_drv_register(&g_display_driver);
     create_screen(width, height);
 

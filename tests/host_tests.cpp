@@ -5,6 +5,7 @@
 #include "walkie/button_ladder.hpp"
 #include "walkie/presence.hpp"
 #include "walkie/protocol.hpp"
+#include "walkie/soft_keys.hpp"
 #include "walkie/talk_controller.hpp"
 #include "walkie/ui_model.hpp"
 #include "walkie/vox.hpp"
@@ -72,6 +73,13 @@ void test_protocol_round_trip() {
     assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::None);
     assert(wp::decode_heartbeat(decoded, decoded_heartbeat));
     assert(decoded_heartbeat.board == wp::BoardType::AiPassport);
+
+    heartbeat.board = wp::BoardType::Mosaico;
+    assert(wp::encode_heartbeat(heartbeat, payload, sizeof(payload), payload_size));
+    assert(wp::encode(header, payload, payload_size, wire.data(), wire.size(), wire_size));
+    assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::None);
+    assert(wp::decode_heartbeat(decoded, decoded_heartbeat));
+    assert(decoded_heartbeat.board == wp::BoardType::Mosaico);
 
     wire[0] ^= 0x01;
     assert(wp::decode(wire.data(), wire_size, decoded) == wp::DecodeError::BadMagic);
@@ -457,6 +465,79 @@ void test_navigation() {
     navigation.short_b(31020, 0);
     navigation.short_a(31030);
     assert(navigation.vox_level() == 0);
+
+    navigation.open(40000, 50, 0);
+    assert(navigation.activate_index(40010, 1) == NavigationAction::None);
+    assert(navigation.page() == UiPage::Volume);
+    assert(navigation.activate_index(40020, 0) == NavigationAction::SaveVolume);
+    assert(navigation.volume_percent() == 0);
+    assert(navigation.page() == UiPage::Volume);
+    navigation.long_b(40030);
+    assert(navigation.page() == UiPage::Menu);
+    assert(navigation.activate_index(40040, 3) == NavigationAction::None);
+    assert(navigation.page() == UiPage::Main);
+}
+
+void test_soft_keys() {
+    const int width = 466;
+    const int height = 466;
+    const int inset = (width * 56 + 233) / 466;
+    const SoftKeyLayout layout = make_soft_key_layout(width, height, true, inset);
+    assert(layout.enabled);
+    assert(layout.talk.contains(width / 2, layout.talk.y + 4));
+    assert(layout.channel.contains(layout.channel.x + 4, layout.channel.y + 4));
+    assert(layout.menu.contains(layout.menu.x + 4, layout.menu.y + 4));
+    assert(hit_soft_key(layout, UiPage::Main, width / 2, layout.talk.y + 4, true) == SoftHit::Talk);
+    assert(hit_soft_key(layout, UiPage::Main, layout.channel.x + 4, layout.channel.y + 4, true) ==
+           SoftHit::Channel);
+    assert(hit_soft_key(layout, UiPage::Main, layout.channel.x + 4, layout.channel.y + 4, false) ==
+           SoftHit::None);
+    assert(hit_soft_key(layout, UiPage::Main, width / 2, layout.talk.y + 4, false) == SoftHit::Talk);
+    assert(hit_soft_key(layout, UiPage::Menu, layout.items[2].x + 4, layout.items[2].y + 4, true) ==
+           SoftHit::Item2);
+    assert(hit_soft_key(layout, UiPage::Devices, layout.list.x + 4, layout.list.y + 4, true) ==
+           SoftHit::List);
+
+    SoftKeyRouter router;
+    router.set_layout(layout);
+    const PointerSample talk_down{true, true, static_cast<int16_t>(width / 2),
+                                  static_cast<int16_t>(layout.talk.y + 4)};
+    const PointerSample talk_up{true, false, static_cast<int16_t>(width / 2),
+                                static_cast<int16_t>(layout.talk.y + 4)};
+    SoftKeyEvents events = router.feed(talk_down, UiPage::Main, true, true);
+    assert(events.talk_pressed);
+    assert(router.talk_held());
+    events = router.feed(talk_up, UiPage::Main, true, true);
+    assert(events.talk_released);
+    assert(!router.talk_held());
+
+    const PointerSample channel_down{true, true, static_cast<int16_t>(layout.channel.x + 4),
+                                     static_cast<int16_t>(layout.channel.y + 4)};
+    const PointerSample channel_up{true, false, static_cast<int16_t>(layout.channel.x + 4),
+                                   static_cast<int16_t>(layout.channel.y + 4)};
+    events = router.feed(channel_down, UiPage::Main, false, true);
+    assert(!events.channel_clicked);
+    events = router.feed(channel_up, UiPage::Main, true, true);
+    assert(!events.channel_clicked);
+
+    events = router.feed(channel_down, UiPage::Main, true, true);
+    events = router.feed(channel_up, UiPage::Main, true, true);
+    assert(events.channel_clicked);
+
+    events = router.feed(talk_down, UiPage::Main, true, true);
+    const PointerSample slid{true, true, static_cast<int16_t>(width / 2), 10};
+    events = router.feed(slid, UiPage::Main, true, true);
+    assert(events.talk_released);
+
+    events = router.feed(channel_down, UiPage::Main, true, false);
+    events = router.feed(channel_up, UiPage::Main, true, false);
+    assert(!events.channel_clicked);
+
+    const SoftKeyLayout mosaico = make_soft_key_layout(480, 480, true, (480 * 56 + 233) / 466);
+    assert(mosaico.enabled);
+    assert(hit_soft_key(mosaico, UiPage::Main, 240, mosaico.talk.y + 4, true) == SoftHit::Talk);
+    assert(hit_soft_key(mosaico, UiPage::Menu, mosaico.items[0].x + 4, mosaico.items[0].y + 4, true) ==
+           SoftHit::Item0);
 }
 
 void test_menu_interrupts_talk() {
@@ -709,6 +790,7 @@ int main() {
     test_arbitration_and_timeout();
     test_start_conflict_resolution();
     test_navigation();
+    test_soft_keys();
     test_menu_interrupts_talk();
     test_jitter_buffer();
     test_eight_device_simulation();

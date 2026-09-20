@@ -116,6 +116,8 @@ int BoardBsp::battery_percent() const {
     return soc < 0 ? 0 : (soc > 100 ? 100 : soc);
 }
 
+PointerSample BoardBsp::poll_pointer() { return {}; }
+
 bool BoardBsp::display_sleep() {
     if (!display_awake_.exchange(false)) return false;
     bsp_display_backlight(0);

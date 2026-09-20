@@ -41,6 +41,8 @@ public:
     void short_b(uint32_t now_ms, size_t peer_count);
     NavigationAction short_a(uint32_t now_ms);
     void long_b(uint32_t now_ms);
+    // Touch boards: tap a row instead of moving a cursor. Volume/VOX save in place.
+    NavigationAction activate_index(uint32_t now_ms, uint8_t index);
     bool tick(uint32_t now_ms);
     void close();
 

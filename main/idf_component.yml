@@ -1,7 +1,21 @@
 dependencies:
-  idf: ">=5.5,<5.6"
+  idf: ">=5.5"
   lvgl/lvgl: "8.4.0"
   m5stack/M5Unified:
     version: "0.2.19"
     rules:
-      - if: "target != esp32c3"
+      - if: "target == esp32s3"
+  esp-mosaico-bsp:
+    path: ../../../bsps/esp-mosaico-bsp/components/esp-mosaico-bsp
+    rules:
+      - if: "target == esp32s31"
+  # Walkie keeps LVGL 8.4 and self-flushes. These are the mosaico panel/touch
+  # drivers without pulling espressif/esp_lvgl_adapter (LVGL 9).
+  espressif/esp_lcd_co5300:
+    version: "^2.2"
+    rules:
+      - if: "target == esp32s31"
+  espressif/esp_lcd_touch_cst9220:
+    version: "^0.1"
+    rules:
+      - if: "target == esp32s31"

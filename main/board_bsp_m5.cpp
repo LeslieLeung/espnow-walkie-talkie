@@ -26,6 +26,7 @@ bool BoardBsp::initialize() {
     } else if (detected == m5::board_t::board_M5StopWatch) {
         board_ = protocol::BoardType::StopWatch;
         round_display_ = true;
+        has_touch_ = true;
         M5.Display.setRotation(0);
     } else {
         return false;
@@ -52,6 +53,16 @@ ButtonEvents BoardBsp::poll_buttons() {
     M5.update();
     return ButtonEvents{M5.BtnA.wasPressed(), M5.BtnA.wasReleased(),
                         M5.BtnB.wasClicked(), M5.BtnB.wasHold()};
+}
+
+PointerSample BoardBsp::poll_pointer() {
+    if (!has_touch_) return {};
+    if (M5.Touch.getCount() == 0) {
+        return PointerSample{true, false, 0, 0};
+    }
+    const auto detail = M5.Touch.getDetail(0);
+    return PointerSample{true, detail.isPressed(), static_cast<int16_t>(detail.x),
+                         static_cast<int16_t>(detail.y)};
 }
 
 int BoardBsp::battery_percent() const {
