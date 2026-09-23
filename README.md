@@ -6,7 +6,7 @@
 
 - [M5Stack StopWatch](https://docs.m5stack.com/zh_CN/core/StopWatch) 与 [StickS3](https://docs.m5stack.com/en/core/StickS3)（ESP32-S3，M5Unified 自动识别，共用一个镜像，IDF 5.5.3）
 - [FoloToy AI Passport](https://github.com/FoloToy/ai-passport)（ESP32-C3，单独编译，IDF 5.5.3）
-- [ESP-Mosaico](../../bsps/esp-mosaico-bsp/README.md)（ESP32-S31，单独编译，IDF 6.2）
+- [ESP-Mosaico](../../bsps/esp-mosaico-bsp/README.md)（ESP32-S31，单独编译，IDF 6.1）
 
 StopWatch、StickS3、AI Passport 与 Mosaico 在协议版本和物理射频信道一致时可以互通。
 
@@ -32,7 +32,7 @@ StopWatch、StickS3、AI Passport 与 Mosaico 在协议版本和物理射频信�
 | 按键 | KEYA / KEYB + 屏上 TALK/CH/MENU | A / B | 上 / 下 / 确定（ADC 分压） | AI（TALK）+ 屏上 TALK/CH/MENU |
 | 电池 | 450 mAh（M5PM1） | 250 mAh | 520 mAh（CW2017 电量计） | BQ27220 |
 | 设备名 | `SW-` + MAC 后四位 | `S3-` + MAC 后四位 | `AP-` + MAC 后四位 | `MO-` + MAC 后四位 |
-| IDF | 5.5.3 | 5.5.3 | 5.5.3 | 6.2 |
+| IDF | 5.5.3 | 5.5.3 | 5.5.3 | 6.1 |
 
 StopWatch / StickS3 / AI Passport 镜像按 8MB Flash 打包，StopWatch 的 16MB 也能烧。Mosaico 镜像按 16MB 打包。AI Passport 板级支持来自 `folotoy/ai-passport` 的 BSP 子集，见 `components/bsp_passport/README.md`。界面统一用 LVGL 8.4 自刷，不走 mosaico 的 LVGL adapter。
 
@@ -86,9 +86,9 @@ VOX 打开时主界面显示 `VOX L` / `VOX M` / `VOX H`。HIGH 开口约 60 ms�
 
 ## 编译与烧录
 
-用 [eim](https://docs.espressif.com/projects/idf-im-cli/en/latest/) 管理 ESP-IDF。StopWatch / StickS3 / AI Passport 用 **v5.5.3**。ESP-Mosaico 必须用 **v6.2**（`idf.py --preview set-target esp32s31`）。不要把 S3/C3 工程放到 IDF 6 下编译。
+用 [eim](https://docs.espressif.com/projects/idf-im-cli/en/latest/) 管理 ESP-IDF。StopWatch / StickS3 / AI Passport 用 **v5.5.3**。ESP-Mosaico 用 **v6.1**（S31 仍是 preview target，要加 `--preview`）。不要把 S3/C3 工程放到 IDF 6 下编译。
 
-S3、C3、S31 使用独立 CMake preset（`build/esp32s3`、`build/esp32c3`、`build/esp32s31` 及各自的 `sdkconfig`）。IDF 5.5.3 的 `idf.py` 还没有 `--preset`，用参数文件 `@presets/<target>`，目录和 `CMakePresets.json` 对齐。
+S3、C3、S31 使用独立 CMake preset（`build/esp32s3`、`build/esp32c3`、`build/esp32s31` 及各自的 `sdkconfig`）。IDF 5.5.3 的 `idf.py` 还没有 `--preset`，用参数文件 `@presets/<target>`。IDF 6.1 用原生 `--preset`；`CMakePresets.json` 里的 `binaryDir` 必须是相对路径（例如 `build/esp32s31`），6.1 的 `idf.py` 不会展开 `${sourceDir}`。
 
 ```sh
 # M5Stack StopWatch / StickS3
@@ -99,12 +99,12 @@ eim run 'idf.py "@presets/esp32s3" -p <PORT> flash monitor' v5.5.3
 eim run 'idf.py "@presets/esp32c3" build' v5.5.3
 eim run 'idf.py "@presets/esp32c3" -p <PORT> flash monitor' v5.5.3
 
-# ESP-Mosaico（需已激活 ESP-IDF 6.2，且支持 preview target）
-idf.py --preview "@presets/esp32s31" build
-idf.py --preview "@presets/esp32s31" -p <PORT> flash monitor
+# ESP-Mosaico（IDF 6.1，S31 preview）
+eim run 'idf.py --preview --preset esp32s31 build' v6.1
+eim run 'idf.py --preview --preset esp32s31 -p <PORT> flash monitor' v6.1
 ```
 
-`menuconfig` 同样要带 preset，例如 `idf.py "@presets/esp32s3" menuconfig`。不要用 `idf.py set-target` 切换。若本地还有旧的默认 `build/`（产物直接在 `build/` 根下），删掉后再用 preset，以免和 `build/esp32s3` 混在同一棵目录里。
+`menuconfig` 同样要带 preset，例如 `idf.py "@presets/esp32s3" menuconfig` 或 `idf.py --preview --preset esp32s31 menuconfig`。不要用 `idf.py set-target` 切换。若本地还有旧的默认 `build/`（产物直接在 `build/` 根下），删掉后再用 preset，以免和 `build/esp32s3` 混在同一棵目录里。
 
 StopWatch 进入下载模式：USB Type-C 接上电脑后，**长按电源键约 2 秒**直到绿色 LED 亮起再松开，然后 flash。
 

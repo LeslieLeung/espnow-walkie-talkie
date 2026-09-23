@@ -13,6 +13,8 @@
 #include "driver/spi_master.h"
 #include "esp_codec_dev.h"
 #include "esp_lcd_co5300.h"
+#include "esp_lcd_io_i2c.h"
+#include "esp_lcd_io_spi.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_touch.h"
@@ -108,22 +110,75 @@ esp_err_t apply_qspi_drive(gpio_num_t lcd_scl) {
     return ESP_OK;
 }
 
+// C designated-init helpers (CO5300_PANEL_* / CST9220 / I2S_STD_*) are C-only.
+// This TU is C++ with -Werror, so fill the same fields as mosaico display.c / audio.c.
+spi_bus_config_t qspi_bus_config(gpio_num_t lcd_scl) {
+    spi_bus_config_t bus_config{};
+    bus_config.sclk_io_num = lcd_scl;
+    bus_config.data0_io_num = BSP_LCD_DATA0;
+    bus_config.data1_io_num = BSP_LCD_DATA1;
+    bus_config.data2_io_num = BSP_LCD_DATA2;
+    bus_config.data3_io_num = BSP_LCD_DATA3;
+    bus_config.data4_io_num = -1;
+    bus_config.data5_io_num = -1;
+    bus_config.data6_io_num = -1;
+    bus_config.data7_io_num = -1;
+    bus_config.max_transfer_sz = kLcdWidth * kLcdHeight * 2;
+    return bus_config;
+}
+
+esp_lcd_panel_io_spi_config_t qspi_panel_io_config() {
+    esp_lcd_panel_io_spi_config_t io_config{};
+    io_config.cs_gpio_num = BSP_LCD_CS;
+    io_config.dc_gpio_num = GPIO_NUM_NC;
+    io_config.spi_mode = 0;
+    io_config.pclk_hz = 40 * 1000 * 1000;
+    io_config.trans_queue_depth = 10;
+    io_config.lcd_cmd_bits = 32;
+    io_config.lcd_param_bits = 8;
+    io_config.flags.quad_mode = 1;
+    io_config.flags.psram_dma_direct = 1;
+    return io_config;
+}
+
+i2s_std_config_t walkie_i2s_config() {
+    i2s_std_config_t cfg{};
+    cfg.clk_cfg.sample_rate_hz = kSampleRateHz;
+    cfg.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
+    cfg.clk_cfg.ext_clk_freq_hz = 0;
+    cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    cfg.clk_cfg.bclk_div = 8;
+    cfg.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
+    cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
+    cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
+    cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+    cfg.slot_cfg.ws_width = 16;
+    cfg.slot_cfg.ws_pol = false;
+    cfg.slot_cfg.bit_shift = true;
+    cfg.slot_cfg.left_align = true;
+    cfg.slot_cfg.big_endian = false;
+    cfg.slot_cfg.bit_order_lsb = false;
+    cfg.gpio_cfg.mclk = BSP_AUDIO_I2S_MCLK;
+    cfg.gpio_cfg.bclk = BSP_AUDIO_I2S_SCLK;
+    cfg.gpio_cfg.ws = BSP_AUDIO_I2S_LRCLK;
+    cfg.gpio_cfg.dout = BSP_AUDIO_I2S_SDOUT;
+    cfg.gpio_cfg.din = BSP_AUDIO_I2S_DSIN;
+    return cfg;
+}
+
 bool init_panel() {
     bsp_board_variant_t variant = BSP_BOARD_VARIANT_V1_0;
     if (bsp_board_variant_get(&variant) != ESP_OK) return false;
     const gpio_num_t lcd_scl = variant == BSP_BOARD_VARIANT_V1_0 ? BSP_LCD_SCL_V1_0 : BSP_LCD_SCL_V1_2;
     const gpio_num_t lcd_rst = variant == BSP_BOARD_VARIANT_V1_0 ? BSP_LCD_RST_V1_0 : BSP_LCD_RST_V1_2;
 
-    const spi_bus_config_t bus_config = CO5300_PANEL_BUS_QSPI_CONFIG(
-        lcd_scl, BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3,
-        kLcdWidth * kLcdHeight * 2);
+    const spi_bus_config_t bus_config = qspi_bus_config(lcd_scl);
     if (spi_bus_initialize(BSP_LCD_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO) != ESP_OK) return false;
     if (apply_qspi_drive(lcd_scl) != ESP_OK) return false;
 
-    esp_lcd_panel_io_spi_config_t io_config = CO5300_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, nullptr, nullptr);
-    io_config.flags.psram_dma_direct = true;
-    if (esp_lcd_new_panel_io_spi(reinterpret_cast<esp_lcd_spi_bus_handle_t>(BSP_LCD_SPI_HOST),
-                                 &io_config, &g_panel_io) != ESP_OK) {
+    const esp_lcd_panel_io_spi_config_t io_config = qspi_panel_io_config();
+    const auto spi_bus = static_cast<esp_lcd_spi_bus_handle_t>(static_cast<int>(BSP_LCD_SPI_HOST));
+    if (esp_lcd_new_panel_io_spi(spi_bus, &io_config, &g_panel_io) != ESP_OK) {
         return false;
     }
 
@@ -147,22 +202,26 @@ bool init_panel() {
 
     g_color_done = xSemaphoreCreateBinary();
     if (g_color_done == nullptr) return false;
-    const esp_lcd_panel_io_callbacks_t io_callbacks = {.on_color_trans_done = on_color_trans_done};
+    esp_lcd_panel_io_callbacks_t io_callbacks{};
+    io_callbacks.on_color_trans_done = on_color_trans_done;
     return esp_lcd_panel_io_register_event_callbacks(g_panel_io, &io_callbacks, nullptr) == ESP_OK;
 }
 
 bool init_touch() {
     if (bsp_i2c_init() != ESP_OK) return false;
-    const esp_lcd_touch_config_t touch_config = {
-        .x_max = kLcdWidth - 1,
-        .y_max = kLcdHeight - 1,
-        .rst_gpio_num = BSP_LCD_TOUCH_RST,
-        .int_gpio_num = BSP_LCD_TOUCH_INT,
-        .levels = {.reset = 0, .interrupt = 0},
-        .flags = {.swap_xy = 0, .mirror_x = 0, .mirror_y = 0},
-    };
-    esp_lcd_panel_io_i2c_config_t io_config = ESP_LCD_TOUCH_IO_I2C_CST9220_CONFIG();
+    esp_lcd_touch_config_t touch_config{};
+    touch_config.x_max = kLcdWidth - 1;
+    touch_config.y_max = kLcdHeight - 1;
+    touch_config.rst_gpio_num = BSP_LCD_TOUCH_RST;
+    touch_config.int_gpio_num = BSP_LCD_TOUCH_INT;
+    esp_lcd_panel_io_i2c_config_t io_config{};
+    io_config.dev_addr = ESP_LCD_TOUCH_IO_I2C_CST9220_ADDRESS;
     io_config.scl_speed_hz = 400000;
+    io_config.control_phase_bytes = 1;
+    io_config.dc_bit_offset = 0;
+    io_config.lcd_cmd_bits = 8;
+    io_config.lcd_param_bits = 8;
+    io_config.flags.disable_control_phase = 1;
     io_config.transaction_timeout_ms = BSP_LCD_TOUCH_I2C_TIMEOUT_MS;
     esp_lcd_panel_io_handle_t touch_io = nullptr;
     if (esp_lcd_new_panel_io_i2c(bsp_i2c_get_handle(), &io_config, &touch_io) != ESP_OK) {
@@ -183,15 +242,7 @@ bool BoardBsp::initialize() {
     if (bsp_power_init() != ESP_OK) return false;
     if (bsp_power_set_vcc_3v3(true) != ESP_OK) return false;
 
-    i2s_std_config_t i2s_config{};
-    i2s_config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(kSampleRateHz);
-    i2s_config.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(16, I2S_SLOT_MODE_STEREO);
-    i2s_config.gpio_cfg.mclk = BSP_AUDIO_I2S_MCLK;
-    i2s_config.gpio_cfg.bclk = BSP_AUDIO_I2S_SCLK;
-    i2s_config.gpio_cfg.ws = BSP_AUDIO_I2S_LRCLK;
-    i2s_config.gpio_cfg.dout = BSP_AUDIO_I2S_SDOUT;
-    i2s_config.gpio_cfg.din = BSP_AUDIO_I2S_DSIN;
-    i2s_config.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    const i2s_std_config_t i2s_config = walkie_i2s_config();
     if (bsp_audio_init(&i2s_config) != ESP_OK) return false;
     g_mic = bsp_audio_codec_microphone_init();
     g_speaker = bsp_audio_codec_speaker_init();
